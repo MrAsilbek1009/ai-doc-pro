@@ -12,7 +12,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from docx import Document
-import fitz  # PyMuPDF
+# import fitz  # PyMuPDF - disabled for Railway
 from io import BytesIO
 import json
 import re
