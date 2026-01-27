@@ -1,6 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+from typing import Optional
 import os
 import tempfile
 from openpyxl import Workbook
@@ -21,6 +23,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Pydantic models
+class ExcelRequest(BaseModel):
+    prompt: str
+
+class AutofillApplyRequest(BaseModel):
+    replacements: list = []
 
 @app.get("/")
 async def root():
@@ -109,19 +118,25 @@ def generate_excel_structure(prompt: str) -> dict:
             }]
         }
     
-    # Kundalik ishlar / Vazifalar
-    elif "kundalik" in prompt_lower or "vazifa" in prompt_lower or "task" in prompt_lower or "ish ro'yxat" in prompt_lower:
+    # Kundalik ishlar / Vazifalar / Jadval / Dars jadvali
+    elif "kundalik" in prompt_lower or "vazifa" in prompt_lower or "task" in prompt_lower or "jadval" in prompt_lower or "dars" in prompt_lower or "fan" in prompt_lower or "soat" in prompt_lower:
         return {
-            "title": "Kundalik_Ishlar",
+            "title": "Kundalik_Jadval",
             "sheets": [{
-                "name": "Vazifalar",
-                "headers": ["№", "Sana", "Vazifa", "Status", "Izoh"],
+                "name": "Jadval",
+                "headers": ["№", "Kun", "Fan/Vazifa", "Soat", "Vaqt", "Izoh"],
                 "data": [
-                    [1, "27.01.2025", "Namuna vazifa 1", "Bajarildi", ""],
-                    [2, "27.01.2025", "Namuna vazifa 2", "Jarayonda", ""],
-                    [3, "28.01.2025", "Namuna vazifa 3", "Kutilmoqda", ""],
-                    [4, "28.01.2025", "Namuna vazifa 4", "Kutilmoqda", ""],
-                    [5, "29.01.2025", "Namuna vazifa 5", "Kutilmoqda", ""],
+                    [1, "Dushanba", "Ingliz tili", 2, "09:00-11:00", ""],
+                    [2, "Dushanba", "Matematika", 1.5, "11:00-12:30", ""],
+                    [3, "Dushanba", "Dasturlash", 4, "14:00-18:00", ""],
+                    [4, "Seshanba", "Ingliz tili", 2, "09:00-11:00", ""],
+                    [5, "Seshanba", "Ona tili", 1, "11:00-12:00", ""],
+                    [6, "Seshanba", "Rus tili", 2, "14:00-16:00", ""],
+                    [7, "Chorshanba", "Matematika", 1.5, "09:00-10:30", ""],
+                    [8, "Chorshanba", "Dasturlash", 4, "11:00-15:00", ""],
+                    [9, "Payshanba", "Ingliz tili", 2, "09:00-11:00", ""],
+                    [10, "Payshanba", "Rus tili", 2, "11:00-13:00", ""],
+                    ["", "", "JAMI SOAT:", "=SUM(D2:D11)", "", ""],
                 ]
             }]
         }
@@ -153,21 +168,6 @@ def generate_excel_structure(prompt: str) -> dict:
                     [2, "Mahsulot B", 50, "kg", 25000, "=C3*E3"],
                     [3, "Mahsulot C", 200, "litr", 15000, "=C4*E4"],
                     ["", "", "", "", "JAMI:", "=SUM(F2:F4)"],
-                ]
-            }]
-        }
-    
-    # Jadval / Table
-    elif "jadval" in prompt_lower or "table" in prompt_lower:
-        return {
-            "title": "Jadval",
-            "sheets": [{
-                "name": "Ma'lumotlar",
-                "headers": ["№", "Ustun 1", "Ustun 2", "Ustun 3", "Ustun 4"],
-                "data": [
-                    [1, "Ma'lumot 1", "Ma'lumot 2", "Ma'lumot 3", "Ma'lumot 4"],
-                    [2, "Ma'lumot 5", "Ma'lumot 6", "Ma'lumot 7", "Ma'lumot 8"],
-                    [3, "Ma'lumot 9", "Ma'lumot 10", "Ma'lumot 11", "Ma'lumot 12"],
                 ]
             }]
         }
@@ -237,12 +237,12 @@ def create_styled_excel(structure: dict) -> str:
     
     return filepath
 
-# Excel Preview endpoint - Frontend kutayotgan nom
+# Excel Preview endpoint - JSON qabul qiladi
 @app.post("/api/excel/preview")
-async def excel_preview(prompt: str = Form(...)):
+async def excel_preview(request: ExcelRequest):
     """Excel preview - strukturani ko'rsatish"""
     try:
-        structure = generate_excel_structure(prompt)
+        structure = generate_excel_structure(request.prompt)
         return {
             "success": True,
             "preview": structure,
@@ -252,12 +252,12 @@ async def excel_preview(prompt: str = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Excel Generate endpoint - Frontend kutayotgan nom
+# Excel Generate endpoint - JSON qabul qiladi
 @app.post("/api/excel/generate")
-async def excel_generate(prompt: str = Form(...)):
+async def excel_generate(request: ExcelRequest):
     """Excel fayl yaratish va yuklab olish"""
     try:
-        structure = generate_excel_structure(prompt)
+        structure = generate_excel_structure(request.prompt)
         filepath = create_styled_excel(structure)
         
         return FileResponse(
@@ -267,12 +267,6 @@ async def excel_generate(prompt: str = Form(...)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# Eski endpoint ham saqlab qolamiz
-@app.post("/api/generate-excel")
-async def generate_excel(prompt: str = Form(...)):
-    """Excel fayl yaratish (eski endpoint)"""
-    return await excel_generate(prompt)
 
 # ============ AUTO-FILL ============
 
