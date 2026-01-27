@@ -66,9 +66,10 @@ const ExcelTab = () => {
         body: JSON.stringify({ prompt })
       });
       
+      let previewData = null;
       if (previewRes.ok) {
-        const data = await previewRes.json();
-        setPreview(data.structure);
+        previewData = await previewRes.json();
+        setPreview(previewData);
       }
       
       // Excel yuklab olish
@@ -83,13 +84,14 @@ const ExcelTab = () => {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${preview?.title || 'hujjat'}.xlsx`;
+        a.download = `${previewData?.title || 'hujjat'}.xlsx`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         window.URL.revokeObjectURL(url);
       } else {
-        throw new Error('Xatolik yuz berdi');
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Xatolik yuz berdi');
       }
     } catch (err) {
       setError(err.message);
@@ -220,11 +222,11 @@ const ExcelTab = () => {
 const AutoFillTab = () => {
   const [file, setFile] = useState(null);
   const [text, setText] = useState('');
-  const [instruction, setInstruction] = useState('');
   const [replacements, setReplacements] = useState([]);
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
 
   const handleDrag = useCallback((e) => {
@@ -251,48 +253,68 @@ const AutoFillTab = () => {
     setFile(f);
     setReplacements([]);
     setResult(null);
-    
-    // Matnni ajratib olish (local preview uchun)
-    if (f.type === 'text/plain') {
-      const reader = new FileReader();
-      reader.onload = (e) => setText(e.target.result);
-      reader.readAsText(f);
-    } else {
-      setText('Fayl yuklandi. Tahlil qilish uchun ko\'rsatma kiriting.');
-    }
+    setError(null);
+    setText('');
   };
 
   const handleAnalyze = async () => {
-    if (!file || !instruction.trim()) return;
+    if (!file) return;
     
     setAnalyzing(true);
+    setError(null);
     
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('instruction', instruction);
       
       const response = await fetch(`${API_URL}/api/autofill/analyze`, {
         method: 'POST',
         body: formData
       });
       
-      if (response.ok) {
-        const data = await response.json();
-        setText(data.text);
-        setReplacements(data.replacements);
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        setText(data.text || '');
+        // Backend dan kelgan ma'lumotlarni to'g'ri format qilish
+        const formattedReplacements = (data.replacements || []).map(r => ({
+          ...r,
+          new_value: r.new_value || ''
+        }));
+        setReplacements(formattedReplacements);
+        
+        if (formattedReplacements.length === 0) {
+          setError('Faylda almashtirilishi kerak joylar topilmadi. [qavs], {qavs} yoki ___ belgilardan foydalaning.');
+        }
+      } else {
+        throw new Error(data.detail || 'Tahlil qilishda xatolik');
       }
     } catch (err) {
-      console.error(err);
+      setError(err.message);
+      setReplacements([]);
     } finally {
       setAnalyzing(false);
     }
   };
 
+  const updateReplacement = (index, newValue) => {
+    setReplacements(prev => prev.map((r, i) => 
+      i === index ? { ...r, new_value: newValue } : r
+    ));
+  };
+
   const handleApply = async () => {
     if (!file || replacements.length === 0) return;
     
+    // Kamida bitta qiymat to'ldirilganini tekshirish
+    const hasValues = replacements.some(r => r.new_value && r.new_value.trim());
+    if (!hasValues) {
+      setError('Kamida bitta maydonni to\'ldiring');
+      return;
+    }
+    
     setLoading(true);
+    setError(null);
     
     try {
       const formData = new FormData();
@@ -306,177 +328,225 @@ const AutoFillTab = () => {
       
       if (response.ok) {
         const blob = await response.blob();
-        const changes = response.headers.get('X-Changes-Count') || replacements.length;
+        const filledCount = replacements.filter(r => r.new_value && r.new_value.trim()).length;
         
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `modified_${file.name}`;
+        a.download = `filled_${file.name}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         window.URL.revokeObjectURL(url);
         
-        setResult({ changes: parseInt(changes) });
+        setResult({ changes: filledCount });
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Xatolik yuz berdi');
       }
     } catch (err) {
-      console.error(err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
+  const resetAll = () => {
+    setFile(null);
+    setText('');
+    setReplacements([]);
+    setResult(null);
+    setError(null);
+  };
+
   return (
-    <div className="grid md:grid-cols-2 gap-6">
-      {/* Left - Upload & Instruction */}
-      <div className="space-y-4">
-        {/* File Upload */}
-        <div
-          onDragEnter={handleDrag}
-          onDragLeave={handleDrag}
-          onDragOver={handleDrag}
-          onDrop={handleDrop}
-          className={`file-upload-zone ${dragActive ? 'file-upload-zone-active' : ''}`}
+    <div className="space-y-6">
+      {/* File Upload */}
+      <div
+        onDragEnter={handleDrag}
+        onDragLeave={handleDrag}
+        onDragOver={handleDrag}
+        onDrop={handleDrop}
+        className={`file-upload-zone ${dragActive ? 'file-upload-zone-active' : ''}`}
+      >
+        <input
+          type="file"
+          onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])}
+          accept=".pdf,.docx,.txt"
+          className="hidden"
+          id="file-upload"
+        />
+        <label htmlFor="file-upload" className="cursor-pointer block text-center">
+          {file ? (
+            <div className="flex items-center justify-center gap-3">
+              <FileText className="w-8 h-8 text-primary-500" />
+              <div className="text-left">
+                <p className="font-medium text-gray-800">{file.name}</p>
+                <p className="text-sm text-gray-500">{(file.size / 1024).toFixed(1)} KB</p>
+              </div>
+              <button 
+                onClick={(e) => { e.preventDefault(); resetAll(); }}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+          ) : (
+            <>
+              <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
+              <p className="text-gray-600 font-medium">Faylni shu yerga tashlang</p>
+              <p className="text-gray-400 text-sm mt-1">yoki bosib tanlang</p>
+              <p className="text-xs text-gray-400 mt-2">PDF, Word, TXT</p>
+            </>
+          )}
+        </label>
+      </div>
+
+      {/* Analyze Button */}
+      {file && replacements.length === 0 && (
+        <button
+          onClick={handleAnalyze}
+          disabled={analyzing}
+          className="btn-primary w-full disabled:opacity-50"
         >
-          <input
-            type="file"
-            onChange={(e) => handleFile(e.target.files[0])}
-            accept=".pdf,.docx,.txt"
-            className="hidden"
-            id="file-upload"
-          />
-          <label htmlFor="file-upload" className="cursor-pointer block text-center">
-            {file ? (
-              <div className="flex items-center justify-center gap-3">
-                <FileText className="w-8 h-8 text-primary-500" />
-                <div className="text-left">
-                  <p className="font-medium text-gray-800">{file.name}</p>
-                  <p className="text-sm text-gray-500">{(file.size / 1024).toFixed(1)} KB</p>
-                </div>
-                <button 
-                  onClick={(e) => { e.preventDefault(); setFile(null); setText(''); }}
-                  className="p-1 hover:bg-gray-100 rounded"
-                >
-                  <X className="w-5 h-5 text-gray-400" />
-                </button>
-              </div>
-            ) : (
-              <>
-                <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-600 font-medium">Faylni shu yerga tashlang</p>
-                <p className="text-gray-400 text-sm mt-1">yoki bosib tanlang</p>
-                <p className="text-xs text-gray-400 mt-2">PDF, Word, TXT</p>
-              </>
-            )}
-          </label>
-        </div>
+          {analyzing ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Tahlil qilinmoqda...
+            </>
+          ) : (
+            <>
+              <Eye className="w-5 h-5" />
+              Tahlil qilish
+            </>
+          )}
+        </button>
+      )}
 
-        {/* Instruction */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Ko'rsatma
-          </label>
-          <textarea
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            placeholder="Masalan: Sanalarni bugungi kunga o'zgartir"
-            className="input-field min-h-[100px]"
-          />
-        </div>
+      {/* Error */}
+      {error && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3"
+        >
+          <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
+          <span className="text-red-700">{error}</span>
+        </motion.div>
+      )}
 
-        {/* Action Buttons */}
-        <div className="flex gap-3">
-          <button
-            onClick={handleAnalyze}
-            disabled={!file || !instruction.trim() || analyzing}
-            className="btn-secondary flex-1 disabled:opacity-50"
-          >
-            {analyzing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Tahlil...
-              </>
-            ) : (
-              <>
-                <Eye className="w-4 h-4" />
-                Tahlil qilish
-              </>
-            )}
-          </button>
+      {/* Replacements Editor */}
+      {replacements.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-xl border border-gray-200 p-5"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="font-semibold text-gray-800">
+              Topilgan joylar ({replacements.length} ta)
+            </h4>
+            <span className="text-xs text-gray-500">Qiymatlarni kiriting</span>
+          </div>
           
-          <button
-            onClick={handleApply}
-            disabled={replacements.length === 0 || loading}
-            className="btn-primary flex-1 disabled:opacity-50"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Qo'llanmoqda...
-              </>
-            ) : (
-              <>
-                <CheckCircle className="w-4 h-4" />
-                Tasdiqlash
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Right - Preview & Results */}
-      <div className="space-y-4">
-        {/* Replacements List */}
-        {replacements.length > 0 && (
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <h4 className="font-medium text-gray-800 mb-3">Topilgan o'zgarishlar</h4>
-            <div className="space-y-2 max-h-[200px] overflow-y-auto">
-              {replacements.map((r, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm p-2 bg-gray-50 rounded-lg">
-                  <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                    {r.type}
-                  </span>
-                  <span className="diff-old">{r.old.substring(0, 30)}</span>
-                  <ArrowRight className="w-4 h-4 text-gray-400" />
-                  <span className="diff-new">{r.new.substring(0, 30)}</span>
+          <div className="space-y-3 max-h-[350px] overflow-y-auto">
+            {replacements.map((r, i) => (
+              <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                      {r.type || 'field'}
+                    </span>
+                    <span className="text-sm font-medium text-gray-700">
+                      {r.placeholder || r.original}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <code className="text-xs bg-gray-200 px-2 py-1 rounded text-gray-600">
+                      {r.original}
+                    </code>
+                    <ArrowRight className="w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={r.new_value || ''}
+                      onChange={(e) => updateReplacement(i, e.target.value)}
+                      placeholder="Yangi qiymat..."
+                      className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg 
+                               focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Text Preview */}
-        {text && (
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <h4 className="font-medium text-gray-800 mb-3">Matn ko'rinishi</h4>
-            <div className="bg-gray-50 rounded-lg p-3 max-h-[250px] overflow-y-auto">
-              <pre className="text-sm text-gray-600 whitespace-pre-wrap font-mono">
-                {text.substring(0, 1500)}
-                {text.length > 1500 && '...'}
-              </pre>
-            </div>
-          </div>
-        )}
-
-        {/* Result */}
-        {result && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="p-4 bg-green-50 border border-green-200 rounded-xl"
-          >
-            <div className="flex items-center gap-3">
-              <CheckCircle className="w-6 h-6 text-green-600" />
-              <div>
-                <p className="font-semibold text-green-800">
-                  {result.changes} ta o'zgarish qo'llandi!
-                </p>
-                <p className="text-sm text-green-600">Fayl yuklab olindi</p>
               </div>
+            ))}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-3 mt-5 pt-4 border-t border-gray-100">
+            <button
+              onClick={resetAll}
+              className="btn-secondary flex-1"
+            >
+              <X className="w-4 h-4" />
+              Bekor qilish
+            </button>
+            <button
+              onClick={handleApply}
+              disabled={loading}
+              className="btn-primary flex-1 disabled:opacity-50"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Qo'llanmoqda...
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="w-4 h-4" />
+                  Tasdiqlash va yuklab olish
+                </>
+              )}
+            </button>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Text Preview */}
+      {text && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="bg-white rounded-xl border border-gray-200 p-4"
+        >
+          <h4 className="font-medium text-gray-800 mb-3">Fayl matni</h4>
+          <div className="bg-gray-50 rounded-lg p-3 max-h-[200px] overflow-y-auto">
+            <pre className="text-sm text-gray-600 whitespace-pre-wrap font-mono">
+              {text.substring(0, 2000)}
+              {text.length > 2000 && '...'}
+            </pre>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Success Result */}
+      {result && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="p-5 bg-green-50 border border-green-200 rounded-xl"
+        >
+          <div className="flex items-center gap-3">
+            <CheckCircle className="w-8 h-8 text-green-600" />
+            <div>
+              <p className="font-semibold text-green-800 text-lg">
+                Muvaffaqiyatli!
+              </p>
+              <p className="text-green-600">
+                {result.changes} ta o'zgarish qo'llandi. Fayl yuklab olindi.
+              </p>
             </div>
-          </motion.div>
-        )}
-      </div>
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 };
