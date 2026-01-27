@@ -559,8 +559,6 @@ async def analyze_document(
         text = ""
        if file_ext == 'pdf':
             raise HTTPException(status_code=400, detail="PDF hozircha qo'llab-quvvatlanmaydi. Word yoki TXT fayldan foydalaning.")
-            for page in doc:
-                text += page.get_text() + "\n"
         elif file_ext == 'docx':
             doc = Document(BytesIO(content))
             for para in doc.paragraphs:
