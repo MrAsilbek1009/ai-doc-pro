@@ -237,9 +237,25 @@ def create_styled_excel(structure: dict) -> str:
     
     return filepath
 
-@app.post("/api/generate-excel")
-async def generate_excel(prompt: str = Form(...)):
-    """Excel fayl yaratish"""
+# Excel Preview endpoint - Frontend kutayotgan nom
+@app.post("/api/excel/preview")
+async def excel_preview(prompt: str = Form(...)):
+    """Excel preview - strukturani ko'rsatish"""
+    try:
+        structure = generate_excel_structure(prompt)
+        return {
+            "success": True,
+            "preview": structure,
+            "title": structure["title"],
+            "sheets": structure["sheets"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Excel Generate endpoint - Frontend kutayotgan nom
+@app.post("/api/excel/generate")
+async def excel_generate(prompt: str = Form(...)):
+    """Excel fayl yaratish va yuklab olish"""
     try:
         structure = generate_excel_structure(prompt)
         filepath = create_styled_excel(structure)
@@ -251,6 +267,12 @@ async def generate_excel(prompt: str = Form(...)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Eski endpoint ham saqlab qolamiz
+@app.post("/api/generate-excel")
+async def generate_excel(prompt: str = Form(...)):
+    """Excel fayl yaratish (eski endpoint)"""
+    return await excel_generate(prompt)
 
 # ============ AUTO-FILL ============
 
@@ -282,6 +304,7 @@ def analyze_text_for_replacements(text: str, instruction: str) -> list:
     
     return replacements
 
+# Auto-Fill Analyze endpoint
 @app.post("/api/autofill/analyze")
 async def analyze_document(
     file: UploadFile = File(...),
@@ -322,6 +345,7 @@ async def analyze_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Auto-Fill Apply endpoint
 @app.post("/api/autofill/apply")
 async def apply_autofill(
     file: UploadFile = File(...),
