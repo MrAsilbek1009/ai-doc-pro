@@ -164,6 +164,54 @@ def generate_excel_structure(prompt: str) -> dict:
             }]
         }
     
+    # Kundalik ishlar / Vazifalar
+    elif "kundalik" in prompt_lower or "vazifa" in prompt_lower or "task" in prompt_lower or "ish" in prompt_lower:
+        return {
+            "title": "Kundalik_Ishlar",
+            "sheets": [{
+                "name": "Vazifalar",
+                "headers": ["№", "Sana", "Vazifa", "Status", "Izoh"],
+                "data": [
+                    [1, "27.01.2025", "Namuna vazifa 1", "Bajarildi", ""],
+                    [2, "27.01.2025", "Namuna vazifa 2", "Jarayonda", ""],
+                    [3, "28.01.2025", "Namuna vazifa 3", "Kutilmoqda", ""],
+                    [4, "28.01.2025", "Namuna vazifa 4", "Kutilmoqda", ""],
+                    [5, "29.01.2025", "Namuna vazifa 5", "Kutilmoqda", ""],
+                ]
+            }]
+        }
+    
+    # Xodimlar ro'yxati
+    elif "xodim" in prompt_lower or "ishchi" in prompt_lower or "hodim" in prompt_lower:
+        return {
+            "title": "Xodimlar_Royxati",
+            "sheets": [{
+                "name": "Xodimlar",
+                "headers": ["№", "F.I.O", "Lavozim", "Telefon", "Ish haqi", "Izoh"],
+                "data": [
+                    [1, "Ismailov Anvar", "Direktor", "+998901234567", 15000000, ""],
+                    [2, "Karimova Dilnoza", "Buxgalter", "+998901234568", 8000000, ""],
+                    [3, "Toshmatov Jasur", "Menejer", "+998901234569", 6000000, ""],
+                ]
+            }]
+        }
+
+    # Inventar / Ombor
+    elif "inventar" in prompt_lower or "ombor" in prompt_lower or "sklad" in prompt_lower:
+        return {
+            "title": "Inventar_Hisoboti",
+            "sheets": [{
+                "name": "Ombor",
+                "headers": ["№", "Mahsulot nomi", "Miqdori", "Birligi", "Narxi", "Jami summa"],
+                "data": [
+                    [1, "Mahsulot A", 100, "dona", 50000, "=C2*E2"],
+                    [2, "Mahsulot B", 50, "kg", 25000, "=C3*E3"],
+                    [3, "Mahsulot C", 200, "litr", 15000, "=C4*E4"],
+                    ["", "", "", "", "JAMI:", "=SUM(F2:F4)"],
+                ]
+            }]
+        }
+        
     # Default - oddiy jadval
     else:
         return {
@@ -509,8 +557,8 @@ async def analyze_document(
         
         # Matnni ajratib olish
         text = ""
-        if file_ext == 'pdf':
-            doc = fitz.open(stream=content, filetype="pdf")
+       if file_ext == 'pdf':
+            raise HTTPException(status_code=400, detail="PDF hozircha qo'llab-quvvatlanmaydi. Word yoki TXT fayldan foydalaning.")
             for page in doc:
                 text += page.get_text() + "\n"
         elif file_ext == 'docx':
