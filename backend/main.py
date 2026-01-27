@@ -13,6 +13,13 @@ from io import BytesIO
 import json
 import re
 
+# PDF uchun
+try:
+    from pypdf import PdfReader
+    PDF_SUPPORTED = True
+except ImportError:
+    PDF_SUPPORTED = False
+
 app = FastAPI(title="AI Doc Pro API")
 
 # CORS sozlamalari
@@ -37,7 +44,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy", "pdf_supported": PDF_SUPPORTED}
 
 # ============ EXCEL GENERATOR ============
 
@@ -273,36 +280,39 @@ async def excel_generate(request: ExcelRequest):
 def analyze_text_for_replacements(text: str, instruction: str) -> list:
     """Matndan almashtirilishi kerak bo'lgan joylarni topish"""
     replacements = []
+    seen = set()
     
     # Umumiy patternlar
     patterns = [
         (r'\[([^\]]+)\]', 'square_bracket'),
         (r'\{([^\}]+)\}', 'curly_bracket'),
         (r'<([^>]+)>', 'angle_bracket'),
-        (r'___+', 'underline'),
-        (r'\.\.\.+', 'dots'),
-        (r'_____', 'blank'),
+        (r'_{3,}', 'underline'),
+        (r'\.{3,}', 'dots'),
     ]
     
     for pattern, pattern_type in patterns:
         matches = re.finditer(pattern, text)
         for match in matches:
-            replacements.append({
-                "original": match.group(0),
-                "placeholder": match.group(1) if match.lastindex else match.group(0),
-                "type": pattern_type,
-                "start": match.start(),
-                "end": match.end(),
-                "suggested_value": ""
-            })
+            original = match.group(0)
+            if original not in seen:
+                seen.add(original)
+                placeholder = match.group(1) if match.lastindex else original
+                replacements.append({
+                    "original": original,
+                    "placeholder": placeholder,
+                    "type": pattern_type,
+                    "start": match.start(),
+                    "end": match.end(),
+                    "new_value": ""
+                })
     
     return replacements
 
 # Auto-Fill Analyze endpoint
 @app.post("/api/autofill/analyze")
 async def analyze_document(
-    file: UploadFile = File(...),
-    instruction: str = Form("")
+    file: UploadFile = File(...)
 ):
     """Hujjatni tahlil qilish"""
     try:
@@ -312,32 +322,50 @@ async def analyze_document(
         text = ""
         
         if file_ext == 'pdf':
-            raise HTTPException(status_code=400, detail="PDF hozircha qo'llab-quvvatlanmaydi. Word yoki TXT fayldan foydalaning.")
+            if not PDF_SUPPORTED:
+                raise HTTPException(status_code=400, detail="PDF kutubxonasi o'rnatilmagan")
+            try:
+                pdf_reader = PdfReader(BytesIO(content))
+                for page in pdf_reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"PDF o'qishda xatolik: {str(e)}")
+                
         elif file_ext == 'docx':
-            doc = Document(BytesIO(content))
-            for para in doc.paragraphs:
-                text += para.text + "\n"
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        text += cell.text + " "
+            try:
+                doc = Document(BytesIO(content))
+                for para in doc.paragraphs:
+                    text += para.text + "\n"
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            text += cell.text + " "
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Word o'qishda xatolik: {str(e)}")
+                
         elif file_ext == 'txt':
             text = content.decode('utf-8', errors='ignore')
         else:
-            raise HTTPException(status_code=400, detail="Qo'llab-quvvatlanmaydigan format")
+            raise HTTPException(status_code=400, detail=f"Qo'llab-quvvatlanmaydigan format: {file_ext}. Faqat PDF, DOCX, TXT")
         
-        replacements = analyze_text_for_replacements(text, instruction)
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Fayl bo'sh yoki matn topilmadi")
+        
+        replacements = analyze_text_for_replacements(text, "")
         
         return {
             "success": True,
             "text": text[:3000],
             "replacements": replacements,
-            "file_type": file_ext
+            "file_type": file_ext,
+            "total_found": len(replacements)
         }
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Server xatoligi: {str(e)}")
 
 # Auto-Fill Apply endpoint
 @app.post("/api/autofill/apply")
@@ -395,13 +423,45 @@ async def apply_autofill(
                 filename=f"filled_{file.filename}"
             )
         
+        elif file_ext == 'pdf':
+            # PDF uchun faqat matnli javob qaytaramiz
+            if not PDF_SUPPORTED:
+                raise HTTPException(status_code=400, detail="PDF kutubxonasi o'rnatilmagan")
+            
+            # PDF dan matn olish
+            pdf_reader = PdfReader(BytesIO(content))
+            text = ""
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            
+            # Almashtirishlarni qo'llash
+            for repl in replacement_list:
+                if repl.get("original") and repl.get("new_value"):
+                    text = text.replace(repl["original"], repl["new_value"])
+            
+            # TXT sifatida qaytarish (PDF tahrirlash murakkab)
+            temp_dir = tempfile.mkdtemp()
+            output_path = os.path.join(temp_dir, f"filled_{file.filename.replace('.pdf', '.txt')}")
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+            
+            return FileResponse(
+                output_path,
+                media_type="text/plain",
+                filename=f"filled_{file.filename.replace('.pdf', '.txt')}"
+            )
+        
         else:
             raise HTTPException(status_code=400, detail="Qo'llab-quvvatlanmaydigan format")
             
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Noto'g'ri replacements formati")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Server xatoligi: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
