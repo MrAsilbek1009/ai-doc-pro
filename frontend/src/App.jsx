@@ -2,12 +2,12 @@ import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Sparkles, FileText, FileSpreadsheet, Presentation, 
-  Mic, MessageSquare, Download, Zap, Clock, Shield,
+  MessageSquare, Download, Zap, Clock, Shield,
   Upload, CheckCircle, AlertCircle, Loader2, X,
-  RefreshCw, Eye, Send, Paperclip, ArrowRight
+  RefreshCw, Eye, ArrowRight, Bot, Lightbulb
 } from 'lucide-react';
 
-// API URL - Railway uchun environment variable dan oladi
+// API URL
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 // Tab ma'lumotlari
@@ -51,6 +51,7 @@ const ExcelTab = () => {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
+  const [aiEnabled, setAiEnabled] = useState(false);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
@@ -70,6 +71,7 @@ const ExcelTab = () => {
       if (previewRes.ok) {
         previewData = await previewRes.json();
         setPreview(previewData);
+        setAiEnabled(previewData.ai_generated);
       }
       
       // Excel yuklab olish
@@ -101,19 +103,25 @@ const ExcelTab = () => {
   };
 
   const examplePrompts = [
-    "12 oylik moliyaviy prognoz - daromad va xarajatlar bilan",
-    "Kafe uchun oylik byudjet rejasi",
-    "Mahsulotlar ro'yxati - narx va miqdor bilan"
+    "Kichik biznes uchun oylik moliyaviy hisobot",
+    "IT kompaniya xodimlari ro'yxati va maoshlari",
+    "Talaba uchun haftalik dars jadvali"
   ];
 
   return (
     <div className="space-y-6">
+      {/* AI Badge */}
+      <div className="flex items-center justify-center gap-2 text-sm">
+        <Bot className="w-4 h-4 text-purple-500" />
+        <span className="text-purple-600 font-medium">Claude AI bilan ishlaydi</span>
+      </div>
+
       {/* Input section */}
       <div className="relative">
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Excel hujjatingizni tasvirlang. Masalan: 12 oylik moliyaviy prognoz yarating..."
+          placeholder="Qanday Excel jadval kerak? Masalan: Restoran uchun haftalik tushum hisoboti, formulalar bilan..."
           className="input-field min-h-[140px] pr-4 text-base"
           disabled={loading}
         />
@@ -124,35 +132,33 @@ const ExcelTab = () => {
             <button
               key={i}
               onClick={() => setPrompt(example)}
-              className="text-xs px-3 py-1.5 bg-gray-50 hover:bg-gray-100 
-                       text-gray-600 rounded-lg transition-colors border border-gray-100"
+              className="text-xs px-3 py-1.5 bg-purple-50 hover:bg-purple-100 
+                       text-purple-600 rounded-lg transition-colors border border-purple-100"
             >
-              {example.substring(0, 40)}...
+              {example.substring(0, 45)}...
             </button>
           ))}
         </div>
       </div>
 
       {/* Action buttons */}
-      <div className="flex items-center gap-4">
-        <button
-          onClick={handleGenerate}
-          disabled={loading || !prompt.trim()}
-          className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {loading ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Yaratilmoqda...
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5" />
-              Yaratish
-            </>
-          )}
-        </button>
-      </div>
+      <button
+        onClick={handleGenerate}
+        disabled={loading || !prompt.trim()}
+        className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {loading ? (
+          <>
+            <Loader2 className="w-5 h-5 animate-spin" />
+            AI yaratmoqda...
+          </>
+        ) : (
+          <>
+            <Sparkles className="w-5 h-5" />
+            AI bilan yaratish
+          </>
+        )}
+      </button>
 
       {/* Error */}
       {error && (
@@ -175,10 +181,15 @@ const ExcelTab = () => {
         >
           <div className="flex items-center gap-3 mb-4">
             <CheckCircle className="w-6 h-6 text-green-600" />
-            <div>
+            <div className="flex-1">
               <h4 className="font-semibold text-green-800">{preview.title}.xlsx</h4>
               <p className="text-sm text-green-600">Muvaffaqiyatli yaratildi va yuklab olindi!</p>
             </div>
+            {aiEnabled && (
+              <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
+                <Bot className="w-3 h-3" /> AI
+              </span>
+            )}
           </div>
           
           {preview.sheets?.[0] && (
@@ -186,23 +197,20 @@ const ExcelTab = () => {
               <table className="min-w-full text-sm">
                 <thead>
                   <tr>
-                    {preview.sheets[0].headers?.slice(0, 5).map((h, i) => (
+                    {preview.sheets[0].headers?.slice(0, 6).map((h, i) => (
                       <th key={i} className="px-3 py-2 bg-gray-100 text-left font-medium text-gray-700">
                         {h}
                       </th>
                     ))}
-                    {preview.sheets[0].headers?.length > 5 && (
-                      <th className="px-3 py-2 bg-gray-100 text-gray-500">...</th>
-                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.sheets[0].data?.slice(0, 3).map((row, i) => (
+                  {preview.sheets[0].data?.slice(0, 4).map((row, i) => (
                     <tr key={i}>
-                      {row.slice(0, 5).map((cell, j) => (
+                      {row.slice(0, 6).map((cell, j) => (
                         <td key={j} className="px-3 py-2 border-t border-gray-100">
                           {typeof cell === 'string' && cell.startsWith('=') 
-                            ? <span className="text-blue-600 text-xs">{cell}</span>
+                            ? <span className="text-blue-600 text-xs font-mono">{cell}</span>
                             : cell}
                         </td>
                       ))}
@@ -228,6 +236,7 @@ const AutoFillTab = () => {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(false);
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -276,10 +285,11 @@ const AutoFillTab = () => {
       
       if (response.ok && data.success) {
         setText(data.text || '');
-        // Backend dan kelgan ma'lumotlarni to'g'ri format qilish
+        setAiEnabled(data.ai_enabled);
+        
         const formattedReplacements = (data.replacements || []).map(r => ({
           ...r,
-          new_value: r.new_value || ''
+          new_value: r.ai_suggestion || r.new_value || ''
         }));
         setReplacements(formattedReplacements);
         
@@ -303,13 +313,19 @@ const AutoFillTab = () => {
     ));
   };
 
+  const applySuggestion = (index) => {
+    const r = replacements[index];
+    if (r.ai_suggestion) {
+      updateReplacement(index, r.ai_suggestion);
+    }
+  };
+
   const handleApply = async () => {
     if (!file || replacements.length === 0) return;
     
-    // Kamida bitta qiymat to'ldirilganini tekshirish
     const hasValues = replacements.some(r => r.new_value && r.new_value.trim());
     if (!hasValues) {
-      setError('Kamida bitta maydonni to\'ldiring');
+      setError("Kamida bitta maydonni to'ldiring");
       return;
     }
     
@@ -361,6 +377,12 @@ const AutoFillTab = () => {
 
   return (
     <div className="space-y-6">
+      {/* AI Badge */}
+      <div className="flex items-center justify-center gap-2 text-sm">
+        <Bot className="w-4 h-4 text-purple-500" />
+        <span className="text-purple-600 font-medium">AI tavsiyalar bilan</span>
+      </div>
+
       {/* File Upload */}
       <div
         onDragEnter={handleDrag}
@@ -412,12 +434,12 @@ const AutoFillTab = () => {
           {analyzing ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
-              Tahlil qilinmoqda...
+              AI tahlil qilmoqda...
             </>
           ) : (
             <>
               <Eye className="w-5 h-5" />
-              Tahlil qilish
+              AI bilan tahlil qilish
             </>
           )}
         </button>
@@ -446,35 +468,48 @@ const AutoFillTab = () => {
             <h4 className="font-semibold text-gray-800">
               Topilgan joylar ({replacements.length} ta)
             </h4>
-            <span className="text-xs text-gray-500">Qiymatlarni kiriting</span>
+            {aiEnabled && (
+              <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
+                <Lightbulb className="w-3 h-3" /> AI tavsiyalar
+              </span>
+            )}
           </div>
           
-          <div className="space-y-3 max-h-[350px] overflow-y-auto">
+          <div className="space-y-3 max-h-[400px] overflow-y-auto">
             {replacements.map((r, i) => (
-              <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                      {r.type || 'field'}
-                    </span>
-                    <span className="text-sm font-medium text-gray-700">
-                      {r.placeholder || r.original}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <code className="text-xs bg-gray-200 px-2 py-1 rounded text-gray-600">
-                      {r.original}
-                    </code>
-                    <ArrowRight className="w-4 h-4 text-gray-400" />
-                    <input
-                      type="text"
-                      value={r.new_value || ''}
-                      onChange={(e) => updateReplacement(i, e.target.value)}
-                      placeholder="Yangi qiymat..."
-                      className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg 
-                               focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    />
-                  </div>
+              <div key={i} className="p-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                    {r.type || 'field'}
+                  </span>
+                  <span className="text-sm font-medium text-gray-700">
+                    {r.placeholder || r.original}
+                  </span>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <code className="text-xs bg-gray-200 px-2 py-1 rounded text-gray-600 whitespace-nowrap">
+                    {r.original.length > 25 ? r.original.substring(0, 25) + '...' : r.original}
+                  </code>
+                  <ArrowRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                  <input
+                    type="text"
+                    value={r.new_value || ''}
+                    onChange={(e) => updateReplacement(i, e.target.value)}
+                    placeholder="Yangi qiymat..."
+                    className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg 
+                             focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                  {r.ai_suggestion && r.new_value !== r.ai_suggestion && (
+                    <button
+                      onClick={() => applySuggestion(i)}
+                      className="text-xs px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-lg flex items-center gap-1 whitespace-nowrap"
+                      title={`AI tavsiyasi: ${r.ai_suggestion}`}
+                    >
+                      <Lightbulb className="w-3 h-3" />
+                      {r.ai_suggestion.length > 15 ? r.ai_suggestion.substring(0, 15) + '...' : r.ai_suggestion}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -693,7 +728,7 @@ export default function App() {
 
         {/* Credits */}
         <p className="text-center text-gray-400 text-sm mt-8">
-          AI Doc Pro • Professional hujjatlar yaratish platformasi
+          AI Doc Pro • Powered by Claude AI
         </p>
       </div>
     </div>
