@@ -10,8 +10,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from docx import Document
-from docx.shared import Pt
 from io import BytesIO
+import copy
 
 # PDF uchun
 try:
@@ -19,16 +19,6 @@ try:
     PDF_SUPPORTED = True
 except ImportError:
     PDF_SUPPORTED = False
-
-# PDF yaratish uchun
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
 
 # Claude API uchun
 try:
@@ -282,180 +272,165 @@ def extract_text_from_file(content: bytes, file_ext: str) -> str:
     
     return text
 
-async def process_document_with_ai(text: str, instruction: str) -> str:
-    """AI yordamida hujjatni ko'rsatma asosida o'zgartirish"""
+async def get_replacements_from_ai(text: str, instruction: str) -> list:
+    """AI dan almashtirish ro'yxatini olish"""
     client = get_claude_client()
     
     if not client:
         raise HTTPException(status_code=400, detail="AI xizmati mavjud emas")
     
-    system_prompt = """Sen professional hujjat tahrir qiluvchi AI assistantsan. 
+    system_prompt = """Sen hujjat tahrirlovchi AI assistantsan.
 
 VAZIFANG:
-1. Berilgan hujjat matnini diqqat bilan o'qi
-2. Foydalanuvchi ko'rsatmasi asosida BARCHA kerakli joylarni toping va o'zgartiring
-3. FAQAT yangilangan to'liq hujjat matnini qaytar
-4. Hech qanday izoh, tushuntirish, yoki "Mana tahrirlangan hujjat" kabi so'zlar qo'shma
-5. Asl hujjat strukturasini va formatlashni saqlang
+1. Hujjat matnini o'qi
+2. Ko'rsatma asosida qaysi so'zlarni qaysi so'zlarga almashtirish kerakligini aniqla
+3. JSON formatda almashtirish ro'yxatini qaytar
 
-MUHIM QOIDALAR:
-- Agar shartnoma raqamini o'zgartirish kerak bo'lsa - BARCHA joylarda o'zgartiring
-- Agar sanalarni o'zgartirish kerak bo'lsa - BARCHA sanalarni o'zgartiring
-- Agar mijoz ma'lumotlarini o'zgartirish kerak bo'lsa - BARCHA joylarda o'zgartiring
-- Agar avtomobil ma'lumotlarini o'zgartirish kerak bo'lsa - BARCHA joylarda o'zgartiring
+MUHIM: Faqat JSON qaytar, boshqa hech narsa yo'q!
 
-FAQAT yangilangan hujjat matnini qaytar!"""
+JSON formati:
+{
+    "replacements": [
+        {"old": "eski matn", "new": "yangi matn"},
+        {"old": "eski matn 2", "new": "yangi matn 2"}
+    ]
+}
+
+QOIDALAR:
+- "old" - hujjatda AYNAN mavjud bo'lgan matn (to'liq mos kelishi kerak)
+- "new" - o'rniga qo'yiladigan yangi matn
+- Sana o'zgartirish kerak bo'lsa, hujjatdagi barcha sanalarni toping
+- Ism o'zgartirish kerak bo'lsa, hujjatdagi barcha ismlarni toping
+- Raqam o'zgartirish kerak bo'lsa, hujjatdagi barcha tegishli raqamlarni toping
+
+Faqat JSON qaytar!"""
 
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=8000,
+            max_tokens=4000,
             messages=[
                 {
                     "role": "user",
-                    "content": f"""Quyidagi hujjatni ko'rsatma asosida tahrirlang:
+                    "content": f"""Quyidagi hujjatni tahlil qil va almashtirish ro'yxatini ber:
 
 === HUJJAT ===
-{text}
+{text[:8000]}
 === HUJJAT TUGADI ===
 
 === KO'RSATMA ===
 {instruction}
 === KO'RSATMA TUGADI ===
 
-Tahrirlangan hujjatni to'liq qaytar:"""
+JSON formatda almashtirish ro'yxatini qaytar:"""
                 }
             ],
             system=system_prompt
         )
         
-        return message.content[0].text.strip()
+        response_text = message.content[0].text.strip()
+        
+        # JSON ni ajratib olish
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        if json_match:
+            data = json.loads(json_match.group())
+            return data.get("replacements", [])
+        
+        return []
         
     except Exception as e:
+        print(f"AI xatolik: {e}")
         raise HTTPException(status_code=500, detail=f"AI xatolik: {str(e)}")
 
-def create_word_document(text: str, original_filename: str) -> str:
-    """Matndan Word hujjat yaratish"""
-    doc = Document()
+def apply_replacements_to_docx(content: bytes, replacements: list) -> str:
+    """Word hujjatga almashtirishlarni qo'llash - FORMATLASHNI SAQLAGAN HOLDA"""
+    doc = Document(BytesIO(content))
     
-    # Matnni paragraflarga bo'lish
-    paragraphs = text.split('\n')
+    def replace_in_paragraph(paragraph, old_text, new_text):
+        """Paragraf ichida matnni almashtirish, formatlashni saqlash"""
+        if old_text in paragraph.text:
+            # Inline replacement - har bir run ni tekshirish
+            full_text = paragraph.text
+            if old_text in full_text:
+                # Oddiy holat - bitta run ichida
+                for run in paragraph.runs:
+                    if old_text in run.text:
+                        run.text = run.text.replace(old_text, new_text)
+                        return True
+                
+                # Murakkab holat - bir nechta run orasida
+                # To'liq paragrafni qayta yozish
+                new_full_text = full_text.replace(old_text, new_text)
+                if paragraph.runs:
+                    # Birinchi run ga butun matnni yozish
+                    first_run = paragraph.runs[0]
+                    first_run.text = new_full_text
+                    # Qolgan run larni tozalash
+                    for run in paragraph.runs[1:]:
+                        run.text = ""
+                    return True
+        return False
     
-    for para_text in paragraphs:
-        if para_text.strip():
-            p = doc.add_paragraph(para_text)
-            for run in p.runs:
-                run.font.size = Pt(11)
-                run.font.name = 'Times New Roman'
-        else:
-            doc.add_paragraph()
+    # Har bir almashtirish uchun
+    for repl in replacements:
+        old_text = repl.get("old", "")
+        new_text = repl.get("new", "")
+        
+        if not old_text or not new_text:
+            continue
+        
+        # Paragraflarda almashtirish
+        for para in doc.paragraphs:
+            replace_in_paragraph(para, old_text, new_text)
+        
+        # Jadvallarda almashtirish
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        replace_in_paragraph(para, old_text, new_text)
+        
+        # Header va Footer larda
+        for section in doc.sections:
+            # Header
+            if section.header:
+                for para in section.header.paragraphs:
+                    replace_in_paragraph(para, old_text, new_text)
+            # Footer
+            if section.footer:
+                for para in section.footer.paragraphs:
+                    replace_in_paragraph(para, old_text, new_text)
     
+    # Saqlash
     temp_dir = tempfile.mkdtemp()
-    output_filename = f"tahrirlangan_{original_filename}"
-    if not output_filename.endswith('.docx'):
-        output_filename = output_filename.rsplit('.', 1)[0] + '.docx'
-    output_path = os.path.join(temp_dir, output_filename)
+    output_path = os.path.join(temp_dir, "tahrirlangan_hujjat.docx")
     doc.save(output_path)
     
     return output_path
 
-def create_pdf_document(text: str, original_filename: str) -> str:
-    """Matndan PDF hujjat yaratish"""
+def apply_replacements_to_txt(content: bytes, replacements: list) -> str:
+    """TXT faylga almashtirishlarni qo'llash"""
+    text = content.decode('utf-8', errors='ignore')
+    
+    for repl in replacements:
+        old_text = repl.get("old", "")
+        new_text = repl.get("new", "")
+        if old_text and new_text:
+            text = text.replace(old_text, new_text)
+    
     temp_dir = tempfile.mkdtemp()
-    output_filename = f"tahrirlangan_{original_filename}"
-    if not output_filename.endswith('.pdf'):
-        output_filename = output_filename.rsplit('.', 1)[0] + '.pdf'
-    output_path = os.path.join(temp_dir, output_filename)
+    output_path = os.path.join(temp_dir, "tahrirlangan_hujjat.txt")
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(text)
     
-    if not REPORTLAB_AVAILABLE:
-        # Reportlab yo'q bo'lsa, DOCX sifatida saqlash
-        return create_word_document(text, original_filename.replace('.pdf', '.docx'))
-    
-    try:
-        # PDF yaratish
-        c = canvas.Canvas(output_path, pagesize=A4)
-        width, height = A4
-        
-        # Shriftni ro'yxatdan o'tkazish
-        font_registered = False
-        font_name = "Helvetica"
-        
-        # DejaVu shriftini topishga harakat qilish
-        font_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans.ttf"
-        ]
-        
-        for font_path in font_paths:
-            if os.path.exists(font_path):
-                try:
-                    pdfmetrics.registerFont(TTFont('DejaVuSans', font_path))
-                    font_name = "DejaVuSans"
-                    font_registered = True
-                    break
-                except:
-                    pass
-        
-        c.setFont(font_name, 10)
-        
-        # Matnni qatorlarga bo'lish
-        lines = text.split('\n')
-        y_position = height - 50
-        line_height = 14
-        margin_left = 50
-        
-        for line in lines:
-            if y_position < 50:
-                c.showPage()
-                c.setFont(font_name, 10)
-                y_position = height - 50
-            
-            # Uzun qatorlarni kesish
-            while len(line) > 85:
-                part = line[:85]
-                # So'z orasida kesish
-                last_space = part.rfind(' ')
-                if last_space > 50:
-                    part = line[:last_space]
-                    line = line[last_space+1:]
-                else:
-                    line = line[85:]
-                
-                try:
-                    c.drawString(margin_left, y_position, part)
-                except:
-                    safe_part = part.encode('latin-1', 'replace').decode('latin-1')
-                    c.drawString(margin_left, y_position, safe_part)
-                y_position -= line_height
-                
-                if y_position < 50:
-                    c.showPage()
-                    c.setFont(font_name, 10)
-                    y_position = height - 50
-            
-            if line:
-                try:
-                    c.drawString(margin_left, y_position, line)
-                except:
-                    safe_line = line.encode('latin-1', 'replace').decode('latin-1')
-                    c.drawString(margin_left, y_position, safe_line)
-            y_position -= line_height
-        
-        c.save()
-        return output_path
-        
-    except Exception as e:
-        print(f"PDF yaratishda xatolik: {e}")
-        # Xatolik bo'lsa DOCX sifatida qaytarish
-        return create_word_document(text, original_filename.replace('.pdf', '.docx'))
+    return output_path
 
 @app.post("/api/autofill/process")
 async def process_autofill(
     file: UploadFile = File(...),
     instruction: str = Form(...)
 ):
-    """Hujjatni AI bilan tahlil qilish va o'zgartirish"""
+    """Hujjatni AI bilan tahlil qilish va o'zgartirish - FORMATLASHNI SAQLAGAN HOLDA"""
     try:
         if not instruction.strip():
             raise HTTPException(status_code=400, detail="Ko'rsatma kiriting")
@@ -463,36 +438,59 @@ async def process_autofill(
         content = await file.read()
         file_ext = file.filename.split('.')[-1].lower()
         
-        # Matnni ajratib olish
+        # Matnni ajratib olish (AI uchun)
         original_text = extract_text_from_file(content, file_ext)
         
         if not original_text.strip():
             raise HTTPException(status_code=400, detail="Fayl bo'sh yoki matn topilmadi")
         
-        # AI bilan o'zgartirish
-        modified_text = await process_document_with_ai(original_text, instruction)
+        # AI dan almashtirish ro'yxatini olish
+        replacements = await get_replacements_from_ai(original_text, instruction)
         
-        # Fayl formatiga qarab saqlash
+        if not replacements:
+            raise HTTPException(status_code=400, detail="O'zgartirish kerak bo'lgan joylar topilmadi")
+        
+        # Fayl formatiga qarab almashtirishni qo'llash
         if file_ext == 'docx':
-            output_path = create_word_document(modified_text, file.filename)
+            # Word faylni TO'G'RIDAN-TO'G'RI tahrirlash
+            output_path = apply_replacements_to_docx(content, replacements)
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            filename = f"tahrirlangan_{file.filename}"
+            
         elif file_ext == 'pdf':
-            output_path = create_pdf_document(modified_text, file.filename)
-            if output_path.endswith('.docx'):
-                media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            else:
-                media_type = "application/pdf"
-        else:  # txt
+            # PDF ni o'qib, Word ga convert qilish
+            # (PDF ni to'g'ridan-to'g'ri tahrirlash juda murakkab)
+            
+            # Matnni olish
+            text = original_text
+            for repl in replacements:
+                old_text = repl.get("old", "")
+                new_text = repl.get("new", "")
+                if old_text and new_text:
+                    text = text.replace(old_text, new_text)
+            
+            # Word fayl yaratish
+            doc = Document()
+            for line in text.split('\n'):
+                if line.strip():
+                    doc.add_paragraph(line)
+            
             temp_dir = tempfile.mkdtemp()
-            output_path = os.path.join(temp_dir, f"tahrirlangan_{file.filename}")
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(modified_text)
+            output_path = os.path.join(temp_dir, f"tahrirlangan_{file.filename.replace('.pdf', '.docx')}")
+            doc.save(output_path)
+            
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            filename = f"tahrirlangan_{file.filename.replace('.pdf', '.docx')}"
+            
+        else:  # txt
+            output_path = apply_replacements_to_txt(content, replacements)
             media_type = "text/plain"
+            filename = f"tahrirlangan_{file.filename}"
         
         return FileResponse(
             output_path,
             media_type=media_type,
-            filename=os.path.basename(output_path)
+            filename=filename
         )
         
     except HTTPException:
