@@ -1,17 +1,16 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from typing import Optional
 import os
 import tempfile
+import json
+import re
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from docx import Document
 from io import BytesIO
-import json
-import re
 
 # PDF uchun
 try:
@@ -19,6 +18,13 @@ try:
     PDF_SUPPORTED = True
 except ImportError:
     PDF_SUPPORTED = False
+
+# Claude API uchun
+try:
+    import anthropic
+    CLAUDE_AVAILABLE = True
+except ImportError:
+    CLAUDE_AVAILABLE = False
 
 app = FastAPI(title="AI Doc Pro API")
 
@@ -31,29 +37,100 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Claude client
+def get_claude_client():
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key or not CLAUDE_AVAILABLE:
+        return None
+    return anthropic.Anthropic(api_key=api_key)
+
 # Pydantic models
 class ExcelRequest(BaseModel):
     prompt: str
 
-class AutofillApplyRequest(BaseModel):
-    replacements: list = []
-
 @app.get("/")
 async def root():
-    return {"message": "AI Doc Pro API ishlamoqda!"}
+    return {
+        "message": "AI Doc Pro API ishlamoqda!",
+        "ai_enabled": CLAUDE_AVAILABLE and bool(os.getenv("ANTHROPIC_API_KEY")),
+        "pdf_supported": PDF_SUPPORTED
+    }
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "pdf_supported": PDF_SUPPORTED}
+    return {
+        "status": "healthy",
+        "ai_enabled": CLAUDE_AVAILABLE and bool(os.getenv("ANTHROPIC_API_KEY")),
+        "pdf_supported": PDF_SUPPORTED
+    }
 
-# ============ EXCEL GENERATOR ============
+# ============ AI EXCEL GENERATOR ============
 
-def generate_excel_structure(prompt: str) -> dict:
-    """Prompt asosida Excel strukturasini aniqlash"""
+async def generate_excel_with_ai(prompt: str) -> dict:
+    """Claude AI yordamida Excel strukturasini yaratish"""
+    client = get_claude_client()
+    
+    if not client:
+        # AI yo'q bo'lsa, oddiy rule-based
+        return generate_excel_fallback(prompt)
+    
+    system_prompt = """Sen Excel jadval yaratuvchi AI assistantsan. Foydalanuvchi so'rovi asosida JSON formatda jadval strukturasini yarat.
+
+MUHIM: Faqat JSON qaytar, boshqa hech narsa yo'q!
+
+JSON formati:
+{
+    "title": "Fayl_nomi",
+    "sheets": [{
+        "name": "Varaq nomi",
+        "headers": ["Ustun1", "Ustun2", "Ustun3"],
+        "data": [
+            ["qiymat1", "qiymat2", "qiymat3"],
+            ["qiymat4", "qiymat5", "=A2+B2"]
+        ]
+    }]
+}
+
+Qoidalar:
+1. Formulalar = bilan boshlanadi (masalan: =SUM(A1:A10), =A2*B2)
+2. Sonlar raqam sifatida (10000, 500.5)
+3. Matn qo'shtirnoqda ("matn")
+4. Sanalar "01.01.2025" formatda
+5. Har doim mantiqiy va to'liq ma'lumotlar bilan
+6. O'zbek tilida"""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Quyidagi so'rov uchun Excel jadval yarat:\n\n{prompt}"
+                }
+            ],
+            system=system_prompt
+        )
+        
+        response_text = message.content[0].text.strip()
+        
+        # JSON ni ajratib olish
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        if json_match:
+            structure = json.loads(json_match.group())
+            return structure
+        else:
+            raise ValueError("JSON topilmadi")
+            
+    except Exception as e:
+        print(f"AI xatolik: {e}")
+        return generate_excel_fallback(prompt)
+
+def generate_excel_fallback(prompt: str) -> dict:
+    """AI ishlamasa, oddiy rule-based generator"""
     prompt_lower = prompt.lower()
     
-    # Moliyaviy hisobot
-    if "moliya" in prompt_lower or "daromad" in prompt_lower or "xarajat" in prompt_lower or "kirim" in prompt_lower or "chiqim" in prompt_lower:
+    if "moliya" in prompt_lower or "daromad" in prompt_lower or "kirim" in prompt_lower or "chiqim" in prompt_lower:
         return {
             "title": "Moliyaviy_Hisobot",
             "sheets": [{
@@ -70,7 +147,6 @@ def generate_excel_structure(prompt: str) -> dict:
             }]
         }
     
-    # Byudjet rejasi
     elif "byudjet" in prompt_lower or "reja" in prompt_lower or "budget" in prompt_lower:
         return {
             "title": "Byudjet_Rejasi",
@@ -83,127 +159,66 @@ def generate_excel_structure(prompt: str) -> dict:
                     [3, "Kommunal", 800000, 750000, "=C4-D4"],
                     [4, "Kiyim-kechak", 1000000, 1200000, "=C5-D5"],
                     [5, "Ko'ngilochar", 500000, 400000, "=C6-D6"],
-                    [6, "Jamg'arma", 1500000, 1500000, "=C7-D7"],
-                    ["", "JAMI:", "=SUM(C2:C7)", "=SUM(D2:D7)", "=C8-D8"],
+                    ["", "JAMI:", "=SUM(C2:C6)", "=SUM(D2:D6)", "=C7-D7"],
                 ]
             }]
         }
     
-    # Mahsulotlar ro'yxati
-    elif "mahsulot" in prompt_lower or "narx" in prompt_lower or "tovar" in prompt_lower or "price" in prompt_lower:
-        return {
-            "title": "Mahsulotlar_Royxati",
-            "sheets": [{
-                "name": "Mahsulotlar",
-                "headers": ["№", "Mahsulot nomi", "Miqdori", "Birlik narxi", "Jami summa"],
-                "data": [
-                    [1, "Mahsulot A", 100, 50000, "=C2*D2"],
-                    [2, "Mahsulot B", 50, 75000, "=C3*D3"],
-                    [3, "Mahsulot C", 200, 25000, "=C4*D4"],
-                    [4, "Mahsulot D", 75, 60000, "=C5*D5"],
-                    [5, "Mahsulot E", 150, 40000, "=C6*D6"],
-                    ["", "", "", "JAMI:", "=SUM(E2:E6)"],
-                ]
-            }]
-        }
-    
-    # Kafe/Restoran
-    elif "kafe" in prompt_lower or "restoran" in prompt_lower or "menyu" in prompt_lower or "menu" in prompt_lower:
-        return {
-            "title": "Kafe_Hisoboti",
-            "sheets": [{
-                "name": "Menyu",
-                "headers": ["№", "Taom nomi", "Kategoriya", "Narxi", "Sotilgan", "Daromad"],
-                "data": [
-                    [1, "Palov", "Asosiy taom", 35000, 50, "=D2*E2"],
-                    [2, "Lag'mon", "Asosiy taom", 30000, 40, "=D3*E3"],
-                    [3, "Shashlik", "Asosiy taom", 45000, 30, "=D4*E4"],
-                    [4, "Choy", "Ichimlik", 5000, 100, "=D5*E5"],
-                    [5, "Salat", "Yengil taom", 20000, 25, "=D6*E6"],
-                    ["", "", "", "", "JAMI:", "=SUM(F2:F6)"],
-                ]
-            }]
-        }
-    
-    # Kundalik ishlar / Vazifalar / Jadval / Dars jadvali
-    elif "kundalik" in prompt_lower or "vazifa" in prompt_lower or "task" in prompt_lower or "jadval" in prompt_lower or "dars" in prompt_lower or "fan" in prompt_lower or "soat" in prompt_lower:
-        return {
-            "title": "Kundalik_Jadval",
-            "sheets": [{
-                "name": "Jadval",
-                "headers": ["№", "Kun", "Fan/Vazifa", "Soat", "Vaqt", "Izoh"],
-                "data": [
-                    [1, "Dushanba", "Ingliz tili", 2, "09:00-11:00", ""],
-                    [2, "Dushanba", "Matematika", 1.5, "11:00-12:30", ""],
-                    [3, "Dushanba", "Dasturlash", 4, "14:00-18:00", ""],
-                    [4, "Seshanba", "Ingliz tili", 2, "09:00-11:00", ""],
-                    [5, "Seshanba", "Ona tili", 1, "11:00-12:00", ""],
-                    [6, "Seshanba", "Rus tili", 2, "14:00-16:00", ""],
-                    [7, "Chorshanba", "Matematika", 1.5, "09:00-10:30", ""],
-                    [8, "Chorshanba", "Dasturlash", 4, "11:00-15:00", ""],
-                    [9, "Payshanba", "Ingliz tili", 2, "09:00-11:00", ""],
-                    [10, "Payshanba", "Rus tili", 2, "11:00-13:00", ""],
-                    ["", "", "JAMI SOAT:", "=SUM(D2:D11)", "", ""],
-                ]
-            }]
-        }
-    
-    # Xodimlar ro'yxati
-    elif "xodim" in prompt_lower or "ishchi" in prompt_lower or "hodim" in prompt_lower or "personal" in prompt_lower:
+    elif "xodim" in prompt_lower or "ishchi" in prompt_lower or "hodim" in prompt_lower:
         return {
             "title": "Xodimlar_Royxati",
             "sheets": [{
                 "name": "Xodimlar",
-                "headers": ["№", "F.I.O", "Lavozim", "Telefon", "Ish haqi", "Izoh"],
+                "headers": ["№", "F.I.O", "Lavozim", "Bo'lim", "Telefon", "Ish haqi"],
                 "data": [
-                    [1, "Ismailov Anvar", "Direktor", "+998901234567", 15000000, ""],
-                    [2, "Karimova Dilnoza", "Buxgalter", "+998901234568", 8000000, ""],
-                    [3, "Toshmatov Jasur", "Menejer", "+998901234569", 6000000, ""],
-                ]
-            }]
-        }
-
-    # Inventar / Ombor
-    elif "inventar" in prompt_lower or "ombor" in prompt_lower or "sklad" in prompt_lower:
-        return {
-            "title": "Inventar_Hisoboti",
-            "sheets": [{
-                "name": "Ombor",
-                "headers": ["№", "Mahsulot nomi", "Miqdori", "Birligi", "Narxi", "Jami summa"],
-                "data": [
-                    [1, "Mahsulot A", 100, "dona", 50000, "=C2*E2"],
-                    [2, "Mahsulot B", 50, "kg", 25000, "=C3*E3"],
-                    [3, "Mahsulot C", 200, "litr", 15000, "=C4*E4"],
-                    ["", "", "", "", "JAMI:", "=SUM(F2:F4)"],
+                    [1, "Karimov Anvar", "Direktor", "Rahbariyat", "+998901234567", 15000000],
+                    [2, "Tosheva Madina", "Buxgalter", "Moliya", "+998901234568", 8000000],
+                    [3, "Rahimov Jasur", "Dasturchi", "IT", "+998901234569", 10000000],
+                    [4, "Saidova Nilufar", "Menejer", "Sotuvlar", "+998901234570", 7000000],
+                    ["", "", "", "", "JAMI:", "=SUM(F2:F5)"],
                 ]
             }]
         }
     
-    # Default - oddiy jadval
+    elif "jadval" in prompt_lower or "dars" in prompt_lower or "soat" in prompt_lower or "kundalik" in prompt_lower:
+        return {
+            "title": "Dars_Jadvali",
+            "sheets": [{
+                "name": "Jadval",
+                "headers": ["№", "Kun", "Fan", "Soat", "Vaqt", "O'qituvchi"],
+                "data": [
+                    [1, "Dushanba", "Matematika", 2, "09:00-11:00", ""],
+                    [2, "Dushanba", "Ingliz tili", 2, "11:00-13:00", ""],
+                    [3, "Seshanba", "Fizika", 2, "09:00-11:00", ""],
+                    [4, "Seshanba", "Informatika", 2, "11:00-13:00", ""],
+                    [5, "Chorshanba", "Kimyo", 2, "09:00-11:00", ""],
+                    ["", "", "JAMI:", "=SUM(D2:D6)", "", ""],
+                ]
+            }]
+        }
+    
     else:
         return {
-            "title": "Hujjat",
+            "title": "Jadval",
             "sheets": [{
-                "name": "Varaq1",
+                "name": "Ma'lumotlar",
                 "headers": ["№", "Nomi", "Miqdori", "Narxi", "Jami"],
                 "data": [
-                    [1, "Element 1", 10, 5000, "=C2*D2"],
-                    [2, "Element 2", 20, 3000, "=C3*D3"],
-                    [3, "Element 3", 15, 4000, "=C4*D4"],
+                    [1, "Element 1", 10, 50000, "=C2*D2"],
+                    [2, "Element 2", 20, 30000, "=C3*D3"],
+                    [3, "Element 3", 15, 40000, "=C4*D4"],
                     ["", "", "", "JAMI:", "=SUM(E2:E4)"],
                 ]
             }]
         }
 
 def create_styled_excel(structure: dict) -> str:
-    """Chiroyli Excel fayl yaratish"""
+    """Excel fayl yaratish"""
     wb = Workbook()
     
-    # Stillar
     header_font = Font(bold=True, color="FFFFFF", size=11)
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     header_alignment = Alignment(horizontal="center", vertical="center")
-    
     thin_border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
@@ -211,83 +226,109 @@ def create_styled_excel(structure: dict) -> str:
         bottom=Side(style='thin')
     )
     
-    for sheet_idx, sheet_data in enumerate(structure["sheets"]):
+    for sheet_idx, sheet_data in enumerate(structure.get("sheets", [])):
         if sheet_idx == 0:
             ws = wb.active
-            ws.title = sheet_data["name"]
+            ws.title = sheet_data.get("name", "Sheet1")[:31]
         else:
-            ws = wb.create_sheet(title=sheet_data["name"])
+            ws = wb.create_sheet(title=sheet_data.get("name", f"Sheet{sheet_idx+1}")[:31])
         
-        # Sarlavhalar
-        for col_idx, header in enumerate(sheet_data["headers"], 1):
+        headers = sheet_data.get("headers", [])
+        for col_idx, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col_idx, value=header)
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = header_alignment
             cell.border = thin_border
         
-        # Ma'lumotlar
-        for row_idx, row_data in enumerate(sheet_data["data"], 2):
+        for row_idx, row_data in enumerate(sheet_data.get("data", []), 2):
             for col_idx, value in enumerate(row_data, 1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
                 cell.border = thin_border
                 cell.alignment = Alignment(horizontal="center")
         
-        # Ustun kengligini sozlash
-        for col_idx, header in enumerate(sheet_data["headers"], 1):
+        for col_idx in range(1, len(headers) + 1):
             ws.column_dimensions[get_column_letter(col_idx)].width = 18
     
-    # Faylni saqlash
     temp_dir = tempfile.mkdtemp()
-    filepath = os.path.join(temp_dir, f"{structure['title']}.xlsx")
+    filepath = os.path.join(temp_dir, f"{structure.get('title', 'document')}.xlsx")
     wb.save(filepath)
     
     return filepath
 
-# Excel Preview endpoint - JSON qabul qiladi
 @app.post("/api/excel/preview")
 async def excel_preview(request: ExcelRequest):
-    """Excel preview - strukturani ko'rsatish"""
+    """Excel preview"""
     try:
-        structure = generate_excel_structure(request.prompt)
+        structure = await generate_excel_with_ai(request.prompt)
         return {
             "success": True,
-            "preview": structure,
-            "title": structure["title"],
-            "sheets": structure["sheets"]
+            "title": structure.get("title", "Hujjat"),
+            "sheets": structure.get("sheets", []),
+            "ai_generated": CLAUDE_AVAILABLE and bool(os.getenv("ANTHROPIC_API_KEY"))
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Excel Generate endpoint - JSON qabul qiladi
 @app.post("/api/excel/generate")
 async def excel_generate(request: ExcelRequest):
-    """Excel fayl yaratish va yuklab olish"""
+    """Excel fayl yaratish"""
     try:
-        structure = generate_excel_structure(request.prompt)
+        structure = await generate_excel_with_ai(request.prompt)
         filepath = create_styled_excel(structure)
         
         return FileResponse(
             filepath,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=f"{structure['title']}.xlsx"
+            filename=f"{structure.get('title', 'document')}.xlsx"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============ AUTO-FILL ============
+# ============ AI AUTO-FILL ============
 
-def analyze_text_for_replacements(text: str, instruction: str) -> list:
-    """Matndan almashtirilishi kerak bo'lgan joylarni topish"""
+def extract_text_from_file(content: bytes, file_ext: str) -> str:
+    """Fayldan matn ajratib olish"""
+    text = ""
+    
+    if file_ext == 'pdf':
+        if not PDF_SUPPORTED:
+            raise HTTPException(status_code=400, detail="PDF kutubxonasi o'rnatilmagan")
+        pdf_reader = PdfReader(BytesIO(content))
+        for page in pdf_reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+                
+    elif file_ext == 'docx':
+        doc = Document(BytesIO(content))
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text += cell.text + " "
+                    
+    elif file_ext == 'txt':
+        text = content.decode('utf-8', errors='ignore')
+    else:
+        raise HTTPException(status_code=400, detail=f"Qo'llab-quvvatlanmaydigan format: {file_ext}")
+    
+    return text
+
+async def analyze_with_ai(text: str) -> list:
+    """AI yordamida hujjatni tahlil qilish"""
+    client = get_claude_client()
+    
+    # Avval oddiy regex bilan topamiz
     replacements = []
     seen = set()
     
-    # Umumiy patternlar
     patterns = [
-        (r'\[([^\]]+)\]', 'square_bracket'),
-        (r'\{([^\}]+)\}', 'curly_bracket'),
-        (r'<([^>]+)>', 'angle_bracket'),
-        (r'_{3,}', 'underline'),
+        (r'\[([^\]]+)\]', 'placeholder'),
+        (r'\{([^\}]+)\}', 'variable'),
+        (r'<([^>]+)>', 'field'),
+        (r'_{3,}', 'blank'),
         (r'\.{3,}', 'dots'),
     ]
     
@@ -302,72 +343,77 @@ def analyze_text_for_replacements(text: str, instruction: str) -> list:
                     "original": original,
                     "placeholder": placeholder,
                     "type": pattern_type,
-                    "start": match.start(),
-                    "end": match.end(),
-                    "new_value": ""
+                    "new_value": "",
+                    "ai_suggestion": ""
                 })
+    
+    # Agar AI mavjud bo'lsa, tavsiyalar qo'shamiz
+    if client and replacements:
+        try:
+            placeholders_list = [r["placeholder"] for r in replacements[:15]]  # Max 15 ta
+            
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1000,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"""Quyidagi hujjat matnidagi bo'sh joylar uchun namuna qiymatlar tavsiya qil.
+
+Hujjat matni (qisqartirilgan):
+{text[:1500]}
+
+Bo'sh joylar: {placeholders_list}
+
+Har bir joy uchun mantiqiy namuna qiymat ber. JSON formatda javob ber:
+{{"suggestions": {{"placeholder1": "qiymat1", "placeholder2": "qiymat2"}}}}
+
+Faqat JSON qaytar!"""
+                    }
+                ]
+            )
+            
+            response_text = message.content[0].text.strip()
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            
+            if json_match:
+                suggestions = json.loads(json_match.group()).get("suggestions", {})
+                for r in replacements:
+                    if r["placeholder"] in suggestions:
+                        r["ai_suggestion"] = suggestions[r["placeholder"]]
+                        
+        except Exception as e:
+            print(f"AI tavsiya xatolik: {e}")
     
     return replacements
 
-# Auto-Fill Analyze endpoint
 @app.post("/api/autofill/analyze")
-async def analyze_document(
-    file: UploadFile = File(...)
-):
-    """Hujjatni tahlil qilish"""
+async def analyze_document(file: UploadFile = File(...)):
+    """Hujjatni AI bilan tahlil qilish"""
     try:
         content = await file.read()
         file_ext = file.filename.split('.')[-1].lower()
         
-        text = ""
-        
-        if file_ext == 'pdf':
-            if not PDF_SUPPORTED:
-                raise HTTPException(status_code=400, detail="PDF kutubxonasi o'rnatilmagan")
-            try:
-                pdf_reader = PdfReader(BytesIO(content))
-                for page in pdf_reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"PDF o'qishda xatolik: {str(e)}")
-                
-        elif file_ext == 'docx':
-            try:
-                doc = Document(BytesIO(content))
-                for para in doc.paragraphs:
-                    text += para.text + "\n"
-                for table in doc.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            text += cell.text + " "
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Word o'qishda xatolik: {str(e)}")
-                
-        elif file_ext == 'txt':
-            text = content.decode('utf-8', errors='ignore')
-        else:
-            raise HTTPException(status_code=400, detail=f"Qo'llab-quvvatlanmaydigan format: {file_ext}. Faqat PDF, DOCX, TXT")
+        text = extract_text_from_file(content, file_ext)
         
         if not text.strip():
             raise HTTPException(status_code=400, detail="Fayl bo'sh yoki matn topilmadi")
         
-        replacements = analyze_text_for_replacements(text, "")
+        replacements = await analyze_with_ai(text)
         
         return {
             "success": True,
             "text": text[:3000],
             "replacements": replacements,
             "file_type": file_ext,
-            "total_found": len(replacements)
+            "total_found": len(replacements),
+            "ai_enabled": CLAUDE_AVAILABLE and bool(os.getenv("ANTHROPIC_API_KEY"))
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server xatoligi: {str(e)}")
 
-# Auto-Fill Apply endpoint
 @app.post("/api/autofill/apply")
 async def apply_autofill(
     file: UploadFile = File(...),
@@ -424,24 +470,13 @@ async def apply_autofill(
             )
         
         elif file_ext == 'pdf':
-            # PDF uchun faqat matnli javob qaytaramiz
-            if not PDF_SUPPORTED:
-                raise HTTPException(status_code=400, detail="PDF kutubxonasi o'rnatilmagan")
+            # PDF -> TXT
+            text = extract_text_from_file(content, 'pdf')
             
-            # PDF dan matn olish
-            pdf_reader = PdfReader(BytesIO(content))
-            text = ""
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-            
-            # Almashtirishlarni qo'llash
             for repl in replacement_list:
                 if repl.get("original") and repl.get("new_value"):
                     text = text.replace(repl["original"], repl["new_value"])
             
-            # TXT sifatida qaytarish (PDF tahrirlash murakkab)
             temp_dir = tempfile.mkdtemp()
             output_path = os.path.join(temp_dir, f"filled_{file.filename.replace('.pdf', '.txt')}")
             with open(output_path, 'w', encoding='utf-8') as f:
