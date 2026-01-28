@@ -11,7 +11,6 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from docx import Document
 from io import BytesIO
-import copy
 
 # PDF uchun
 try:
@@ -19,6 +18,13 @@ try:
     PDF_SUPPORTED = True
 except ImportError:
     PDF_SUPPORTED = False
+
+# PDF to Word uchun
+try:
+    from pdf2docx import Converter
+    PDF2DOCX_AVAILABLE = True
+except ImportError:
+    PDF2DOCX_AVAILABLE = False
 
 # Claude API uchun
 try:
@@ -54,7 +60,8 @@ async def root():
     return {
         "message": "AI Doc Pro API ishlamoqda!",
         "ai_enabled": CLAUDE_AVAILABLE and bool(os.getenv("ANTHROPIC_API_KEY")),
-        "pdf_supported": PDF_SUPPORTED
+        "pdf_supported": PDF_SUPPORTED,
+        "pdf2docx_available": PDF2DOCX_AVAILABLE
     }
 
 @app.get("/health")
@@ -273,7 +280,7 @@ def extract_text_from_file(content: bytes, file_ext: str) -> str:
     return text
 
 async def get_replacements_from_ai(text: str, instruction: str) -> list:
-    """AI dan almashtirish ro'yxatini olish"""
+    """AI dan almashtirish ro'yxatini olish - KUCHAYTIRILGAN"""
     client = get_claude_client()
     
     if not client:
@@ -282,47 +289,59 @@ async def get_replacements_from_ai(text: str, instruction: str) -> list:
     system_prompt = """Sen hujjat tahrirlovchi AI assistantsan.
 
 VAZIFANG:
-1. Hujjat matnini o'qi
-2. Ko'rsatma asosida qaysi so'zlarni qaysi so'zlarga almashtirish kerakligini aniqla
+1. Hujjat matnini DIQQAT BILAN o'qi
+2. Ko'rsatma asosida BARCHA almashtirilishi kerak bo'lgan joylarni top
 3. JSON formatda almashtirish ro'yxatini qaytar
 
-MUHIM: Faqat JSON qaytar, boshqa hech narsa yo'q!
+MUHIM QOIDALAR:
+1. Hujjatda bir xil ma'lumot BIR NECHA MARTA takrorlanishi mumkin - BARCHASINI top!
+2. Masalan: shartnoma raqami 5 joyda bo'lishi mumkin - 5 tasini ham qo'sh
+3. Masalan: mijoz ismi 10 joyda bo'lishi mumkin - 10 tasini ham qo'sh
+4. Masalan: sana 20 joyda bo'lishi mumkin - 20 tasini ham qo'sh
+5. "old" maydoni AYNAN hujjatdagi matn bo'lishi kerak
+6. Hatto bir xil matn bo'lsa ham, har birini alohida qo'sh
 
 JSON formati:
 {
     "replacements": [
-        {"old": "eski matn", "new": "yangi matn"},
-        {"old": "eski matn 2", "new": "yangi matn 2"}
+        {"old": "eski matn 1", "new": "yangi matn 1"},
+        {"old": "eski matn 2", "new": "yangi matn 2"},
+        {"old": "eski matn 3", "new": "yangi matn 3"}
     ]
 }
 
-QOIDALAR:
-- "old" - hujjatda AYNAN mavjud bo'lgan matn (to'liq mos kelishi kerak)
-- "new" - o'rniga qo'yiladigan yangi matn
-- Sana o'zgartirish kerak bo'lsa, hujjatdagi barcha sanalarni toping
-- Ism o'zgartirish kerak bo'lsa, hujjatdagi barcha ismlarni toping
-- Raqam o'zgartirish kerak bo'lsa, hujjatdagi barcha tegishli raqamlarni toping
+MISOLLAR:
+- Agar "shartnoma raqamini 01-25/199B ga o'zgartir" deyilsa:
+  Hujjatdagi "№ 01-24/123" ni toping va {"old": "№ 01-24/123", "new": "№ 01-25/199B"} qo'shing
+  
+- Agar "mijoz ismini Karimov ga o'zgartir" deyilsa:
+  Hujjatdagi BARCHA eski ismlarni toping va har biri uchun alohida {"old": "...", "new": "Karimov"} qo'shing
 
-Faqat JSON qaytar!"""
+- Agar "sanalarni bugungi kunga o'zgartir" deyilsa:
+  Hujjatdagi BARCHA sanalarni toping (19.12.2024, 20.12.2024 va h.k.) va har biri uchun alohida replacement qo'shing
+
+FAQAT JSON QAYTAR! Boshqa hech qanday matn yo'q!"""
 
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=4000,
+            max_tokens=8000,
             messages=[
                 {
                     "role": "user",
-                    "content": f"""Quyidagi hujjatni tahlil qil va almashtirish ro'yxatini ber:
+                    "content": f"""Quyidagi hujjatni DIQQAT BILAN tahlil qil va BARCHA almashtirilishi kerak bo'lgan joylarni top:
 
-=== HUJJAT ===
-{text[:8000]}
+=== HUJJAT MATNI ===
+{text}
 === HUJJAT TUGADI ===
 
-=== KO'RSATMA ===
+=== FOYDALANUVCHI KO'RSATMASI ===
 {instruction}
 === KO'RSATMA TUGADI ===
 
-JSON formatda almashtirish ro'yxatini qaytar:"""
+MUHIM: Hujjatda bir xil ma'lumot bir necha marta takrorlanishi mumkin. BARCHASINI top va ro'yxatga qo'sh!
+
+JSON formatda BARCHA almashtirishlar ro'yxatini qaytar:"""
                 }
             ],
             system=system_prompt
@@ -334,7 +353,9 @@ JSON formatda almashtirish ro'yxatini qaytar:"""
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             data = json.loads(json_match.group())
-            return data.get("replacements", [])
+            replacements = data.get("replacements", [])
+            print(f"AI {len(replacements)} ta almashtirish topdi")
+            return replacements
         
         return []
         
@@ -345,29 +366,29 @@ JSON formatda almashtirish ro'yxatini qaytar:"""
 def apply_replacements_to_docx(content: bytes, replacements: list) -> str:
     """Word hujjatga almashtirishlarni qo'llash - FORMATLASHNI SAQLAGAN HOLDA"""
     doc = Document(BytesIO(content))
+    replacement_count = 0
     
     def replace_in_paragraph(paragraph, old_text, new_text):
         """Paragraf ichida matnni almashtirish, formatlashni saqlash"""
+        nonlocal replacement_count
         if old_text in paragraph.text:
-            # Inline replacement - har bir run ni tekshirish
+            # Har bir run ni tekshirish
+            for run in paragraph.runs:
+                if old_text in run.text:
+                    run.text = run.text.replace(old_text, new_text)
+                    replacement_count += 1
+                    return True
+            
+            # Murakkab holat - bir nechta run orasida bo'lingan
             full_text = paragraph.text
             if old_text in full_text:
-                # Oddiy holat - bitta run ichida
-                for run in paragraph.runs:
-                    if old_text in run.text:
-                        run.text = run.text.replace(old_text, new_text)
-                        return True
-                
-                # Murakkab holat - bir nechta run orasida
-                # To'liq paragrafni qayta yozish
                 new_full_text = full_text.replace(old_text, new_text)
                 if paragraph.runs:
-                    # Birinchi run ga butun matnni yozish
                     first_run = paragraph.runs[0]
                     first_run.text = new_full_text
-                    # Qolgan run larni tozalash
                     for run in paragraph.runs[1:]:
                         run.text = ""
+                    replacement_count += 1
                     return True
         return False
     
@@ -376,8 +397,10 @@ def apply_replacements_to_docx(content: bytes, replacements: list) -> str:
         old_text = repl.get("old", "")
         new_text = repl.get("new", "")
         
-        if not old_text or not new_text:
+        if not old_text:
             continue
+        if new_text is None:
+            new_text = ""
         
         # Paragraflarda almashtirish
         for para in doc.paragraphs:
@@ -392,14 +415,14 @@ def apply_replacements_to_docx(content: bytes, replacements: list) -> str:
         
         # Header va Footer larda
         for section in doc.sections:
-            # Header
             if section.header:
                 for para in section.header.paragraphs:
                     replace_in_paragraph(para, old_text, new_text)
-            # Footer
             if section.footer:
                 for para in section.footer.paragraphs:
                     replace_in_paragraph(para, old_text, new_text)
+    
+    print(f"Jami {replacement_count} ta almashtirish bajarildi")
     
     # Saqlash
     temp_dir = tempfile.mkdtemp()
@@ -407,6 +430,43 @@ def apply_replacements_to_docx(content: bytes, replacements: list) -> str:
     doc.save(output_path)
     
     return output_path
+
+def convert_pdf_to_docx(content: bytes) -> str:
+    """PDF ni Word ga convert qilish - FORMATLASHNI SAQLAGAN HOLDA"""
+    temp_dir = tempfile.mkdtemp()
+    pdf_path = os.path.join(temp_dir, "input.pdf")
+    docx_path = os.path.join(temp_dir, "converted.docx")
+    
+    # PDF ni saqlash
+    with open(pdf_path, 'wb') as f:
+        f.write(content)
+    
+    if PDF2DOCX_AVAILABLE:
+        try:
+            # pdf2docx bilan convert qilish - formatlashni yaxshi saqlaydi
+            cv = Converter(pdf_path)
+            cv.convert(docx_path)
+            cv.close()
+            return docx_path
+        except Exception as e:
+            print(f"pdf2docx xatolik: {e}")
+    
+    # Fallback - oddiy matn bilan
+    if PDF_SUPPORTED:
+        pdf_reader = PdfReader(BytesIO(content))
+        doc = Document()
+        
+        for page in pdf_reader.pages:
+            text = page.extract_text()
+            if text:
+                for line in text.split('\n'):
+                    if line.strip():
+                        doc.add_paragraph(line)
+        
+        doc.save(docx_path)
+        return docx_path
+    
+    raise HTTPException(status_code=400, detail="PDF convert qilib bo'lmadi")
 
 def apply_replacements_to_txt(content: bytes, replacements: list) -> str:
     """TXT faylga almashtirishlarni qo'llash"""
@@ -430,13 +490,22 @@ async def process_autofill(
     file: UploadFile = File(...),
     instruction: str = Form(...)
 ):
-    """Hujjatni AI bilan tahlil qilish va o'zgartirish - FORMATLASHNI SAQLAGAN HOLDA"""
+    """Hujjatni AI bilan tahlil qilish va o'zgartirish"""
     try:
         if not instruction.strip():
             raise HTTPException(status_code=400, detail="Ko'rsatma kiriting")
         
         content = await file.read()
         file_ext = file.filename.split('.')[-1].lower()
+        original_filename = file.filename
+        
+        # PDF bo'lsa, avval Word ga convert qilamiz
+        if file_ext == 'pdf':
+            docx_path = convert_pdf_to_docx(content)
+            with open(docx_path, 'rb') as f:
+                content = f.read()
+            file_ext = 'docx'
+            original_filename = original_filename.replace('.pdf', '.docx')
         
         # Matnni ajratib olish (AI uchun)
         original_text = extract_text_from_file(content, file_ext)
@@ -452,40 +521,14 @@ async def process_autofill(
         
         # Fayl formatiga qarab almashtirishni qo'llash
         if file_ext == 'docx':
-            # Word faylni TO'G'RIDAN-TO'G'RI tahrirlash
             output_path = apply_replacements_to_docx(content, replacements)
             media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            filename = f"tahrirlangan_{file.filename}"
-            
-        elif file_ext == 'pdf':
-            # PDF ni o'qib, Word ga convert qilish
-            # (PDF ni to'g'ridan-to'g'ri tahrirlash juda murakkab)
-            
-            # Matnni olish
-            text = original_text
-            for repl in replacements:
-                old_text = repl.get("old", "")
-                new_text = repl.get("new", "")
-                if old_text and new_text:
-                    text = text.replace(old_text, new_text)
-            
-            # Word fayl yaratish
-            doc = Document()
-            for line in text.split('\n'):
-                if line.strip():
-                    doc.add_paragraph(line)
-            
-            temp_dir = tempfile.mkdtemp()
-            output_path = os.path.join(temp_dir, f"tahrirlangan_{file.filename.replace('.pdf', '.docx')}")
-            doc.save(output_path)
-            
-            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            filename = f"tahrirlangan_{file.filename.replace('.pdf', '.docx')}"
+            filename = f"tahrirlangan_{original_filename}"
             
         else:  # txt
             output_path = apply_replacements_to_txt(content, replacements)
             media_type = "text/plain"
-            filename = f"tahrirlangan_{file.filename}"
+            filename = f"tahrirlangan_{original_filename}"
         
         return FileResponse(
             output_path,
