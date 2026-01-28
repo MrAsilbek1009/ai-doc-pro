@@ -4,7 +4,7 @@ import {
   Sparkles, FileText, FileSpreadsheet, Presentation, 
   MessageSquare, Download, Zap, Clock, Shield,
   Upload, CheckCircle, AlertCircle, Loader2, X,
-  RefreshCw, Eye, ArrowRight, Bot, Lightbulb
+  RefreshCw, Eye, Edit3
 } from 'lucide-react';
 
 // API URL
@@ -12,11 +12,11 @@ const API_URL = import.meta.env.VITE_API_URL || '';
 
 // Tab ma'lumotlari
 const tabs = [
+  { id: 'excel', label: 'Excel', icon: FileSpreadsheet, active: true },
+  { id: 'autofill', label: 'Auto-Fill', icon: RefreshCw, active: true },
   { id: 'doc', label: 'Doc', icon: FileText, active: false },
   { id: 'pdf', label: 'PDF', icon: FileText, active: false },
   { id: 'slides', label: 'Slaydlar', icon: Presentation, active: false },
-  { id: 'excel', label: 'Excel', icon: FileSpreadsheet, active: true },
-  { id: 'autofill', label: 'Auto-Fill', icon: RefreshCw, active: true },
   { id: 'chat', label: 'Chat', icon: MessageSquare, active: false },
 ];
 
@@ -51,7 +51,6 @@ const ExcelTab = () => {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
-  const [aiEnabled, setAiEnabled] = useState(false);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
@@ -71,7 +70,6 @@ const ExcelTab = () => {
       if (previewRes.ok) {
         previewData = await previewRes.json();
         setPreview(previewData);
-        setAiEnabled(previewData.ai_generated);
       }
       
       // Excel yuklab olish
@@ -110,12 +108,6 @@ const ExcelTab = () => {
 
   return (
     <div className="space-y-6">
-      {/* AI Badge */}
-      <div className="flex items-center justify-center gap-2 text-sm">
-        <Bot className="w-4 h-4 text-purple-500" />
-        <span className="text-purple-600 font-medium">Claude AI bilan ishlaydi</span>
-      </div>
-
       {/* Input section */}
       <div className="relative">
         <textarea
@@ -132,8 +124,8 @@ const ExcelTab = () => {
             <button
               key={i}
               onClick={() => setPrompt(example)}
-              className="text-xs px-3 py-1.5 bg-purple-50 hover:bg-purple-100 
-                       text-purple-600 rounded-lg transition-colors border border-purple-100"
+              className="text-xs px-3 py-1.5 bg-gray-50 hover:bg-gray-100 
+                       text-gray-600 rounded-lg transition-colors border border-gray-100"
             >
               {example.substring(0, 45)}...
             </button>
@@ -150,12 +142,12 @@ const ExcelTab = () => {
         {loading ? (
           <>
             <Loader2 className="w-5 h-5 animate-spin" />
-            AI yaratmoqda...
+            Yaratilmoqda...
           </>
         ) : (
           <>
             <Sparkles className="w-5 h-5" />
-            AI bilan yaratish
+            Yaratish
           </>
         )}
       </button>
@@ -185,11 +177,6 @@ const ExcelTab = () => {
               <h4 className="font-semibold text-green-800">{preview.title}.xlsx</h4>
               <p className="text-sm text-green-600">Muvaffaqiyatli yaratildi va yuklab olindi!</p>
             </div>
-            {aiEnabled && (
-              <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
-                <Bot className="w-3 h-3" /> AI
-              </span>
-            )}
           </div>
           
           {preview.sheets?.[0] && (
@@ -226,17 +213,14 @@ const ExcelTab = () => {
   );
 };
 
-// Auto-Fill Tab komponenti
+// Auto-Fill Tab komponenti - YANGILANGAN
 const AutoFillTab = () => {
   const [file, setFile] = useState(null);
-  const [text, setText] = useState('');
-  const [replacements, setReplacements] = useState([]);
+  const [instruction, setInstruction] = useState('');
   const [loading, setLoading] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
-  const [aiEnabled, setAiEnabled] = useState(false);
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -254,78 +238,23 @@ const AutoFillTab = () => {
     setDragActive(false);
     
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFile(e.dataTransfer.files[0]);
+      setFile(e.dataTransfer.files[0]);
+      setResult(null);
+      setError(null);
     }
   }, []);
 
-  const handleFile = async (f) => {
-    setFile(f);
-    setReplacements([]);
-    setResult(null);
-    setError(null);
-    setText('');
-  };
-
-  const handleAnalyze = async () => {
-    if (!file) return;
-    
-    setAnalyzing(true);
-    setError(null);
-    
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      const response = await fetch(`${API_URL}/api/autofill/analyze`, {
-        method: 'POST',
-        body: formData
-      });
-      
-      const data = await response.json();
-      
-      if (response.ok && data.success) {
-        setText(data.text || '');
-        setAiEnabled(data.ai_enabled);
-        
-        const formattedReplacements = (data.replacements || []).map(r => ({
-          ...r,
-          new_value: r.ai_suggestion || r.new_value || ''
-        }));
-        setReplacements(formattedReplacements);
-        
-        if (formattedReplacements.length === 0) {
-          setError('Faylda almashtirilishi kerak joylar topilmadi. [qavs], {qavs} yoki ___ belgilardan foydalaning.');
-        }
-      } else {
-        throw new Error(data.detail || 'Tahlil qilishda xatolik');
-      }
-    } catch (err) {
-      setError(err.message);
-      setReplacements([]);
-    } finally {
-      setAnalyzing(false);
+  const handleFileChange = (e) => {
+    if (e.target.files[0]) {
+      setFile(e.target.files[0]);
+      setResult(null);
+      setError(null);
     }
   };
 
-  const updateReplacement = (index, newValue) => {
-    setReplacements(prev => prev.map((r, i) => 
-      i === index ? { ...r, new_value: newValue } : r
-    ));
-  };
-
-  const applySuggestion = (index) => {
-    const r = replacements[index];
-    if (r.ai_suggestion) {
-      updateReplacement(index, r.ai_suggestion);
-    }
-  };
-
-  const handleApply = async () => {
-    if (!file || replacements.length === 0) return;
-    
-    const hasValues = replacements.some(r => r.new_value && r.new_value.trim());
-    if (!hasValues) {
-      setError("Kamida bitta maydonni to'ldiring");
+  const handleProcess = async () => {
+    if (!file || !instruction.trim()) {
+      setError("Fayl va ko'rsatma kiriting");
       return;
     }
     
@@ -335,27 +264,35 @@ const AutoFillTab = () => {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('replacements', JSON.stringify(replacements));
+      formData.append('instruction', instruction);
       
-      const response = await fetch(`${API_URL}/api/autofill/apply`, {
+      const response = await fetch(`${API_URL}/api/autofill/process`, {
         method: 'POST',
         body: formData
       });
       
       if (response.ok) {
         const blob = await response.blob();
-        const filledCount = replacements.filter(r => r.new_value && r.new_value.trim()).length;
+        const contentDisposition = response.headers.get('content-disposition');
+        let filename = 'tahrirlangan_hujjat';
+        
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          if (match) {
+            filename = match[1].replace(/['"]/g, '');
+          }
+        }
         
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `filled_${file.name}`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
         window.URL.revokeObjectURL(url);
         
-        setResult({ changes: filledCount });
+        setResult({ success: true, filename });
       } else {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.detail || 'Xatolik yuz berdi');
@@ -369,20 +306,19 @@ const AutoFillTab = () => {
 
   const resetAll = () => {
     setFile(null);
-    setText('');
-    setReplacements([]);
+    setInstruction('');
     setResult(null);
     setError(null);
   };
 
+  const exampleInstructions = [
+    "Shartnoma raqamini 01-25/199B ga o'zgartir va sanalarni bugungi sanaga",
+    "Mijoz ismini Karimov Jasur ga o'zgartir",
+    "Avtomobil narxini 250 000 000 so'm ga o'zgartir"
+  ];
+
   return (
     <div className="space-y-6">
-      {/* AI Badge */}
-      <div className="flex items-center justify-center gap-2 text-sm">
-        <Bot className="w-4 h-4 text-purple-500" />
-        <span className="text-purple-600 font-medium">AI tavsiyalar bilan</span>
-      </div>
-
       {/* File Upload */}
       <div
         onDragEnter={handleDrag}
@@ -393,7 +329,7 @@ const AutoFillTab = () => {
       >
         <input
           type="file"
-          onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])}
+          onChange={handleFileChange}
           accept=".pdf,.docx,.txt"
           className="hidden"
           id="file-upload"
@@ -424,26 +360,56 @@ const AutoFillTab = () => {
         </label>
       </div>
 
-      {/* Analyze Button */}
-      {file && replacements.length === 0 && (
-        <button
-          onClick={handleAnalyze}
-          disabled={analyzing}
-          className="btn-primary w-full disabled:opacity-50"
-        >
-          {analyzing ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              AI tahlil qilmoqda...
-            </>
-          ) : (
-            <>
-              <Eye className="w-5 h-5" />
-              AI bilan tahlil qilish
-            </>
-          )}
-        </button>
-      )}
+      {/* Instruction Input */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Ko'rsatma
+        </label>
+        <textarea
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          placeholder="Hujjatda qanday o'zgarishlar kerak? Masalan:
+- Shartnoma raqamini 01-25/199B ga o'zgartir
+- Mijoz ismi - Karimov Jasur Anvarovich
+- Sanalarni bugungi sanaga o'zgartir
+- Avtomobil narxini 250 000 000 so'm ga o'zgartir"
+          className="input-field min-h-[150px] text-base"
+          disabled={loading}
+        />
+        
+        {/* Example chips */}
+        <div className="flex flex-wrap gap-2 mt-3">
+          {exampleInstructions.map((example, i) => (
+            <button
+              key={i}
+              onClick={() => setInstruction(example)}
+              className="text-xs px-3 py-1.5 bg-gray-50 hover:bg-gray-100 
+                       text-gray-600 rounded-lg transition-colors border border-gray-100"
+            >
+              {example.substring(0, 40)}...
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Action Button */}
+      <button
+        onClick={handleProcess}
+        disabled={loading || !file || !instruction.trim()}
+        className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {loading ? (
+          <>
+            <Loader2 className="w-5 h-5 animate-spin" />
+            Tahrirlanmoqda...
+          </>
+        ) : (
+          <>
+            <Edit3 className="w-5 h-5" />
+            Tasdiqlash va yuklab olish
+          </>
+        )}
+      </button>
 
       {/* Error */}
       {error && (
@@ -457,113 +423,8 @@ const AutoFillTab = () => {
         </motion.div>
       )}
 
-      {/* Replacements Editor */}
-      {replacements.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-xl border border-gray-200 p-5"
-        >
-          <div className="flex items-center justify-between mb-4">
-            <h4 className="font-semibold text-gray-800">
-              Topilgan joylar ({replacements.length} ta)
-            </h4>
-            {aiEnabled && (
-              <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
-                <Lightbulb className="w-3 h-3" /> AI tavsiyalar
-              </span>
-            )}
-          </div>
-          
-          <div className="space-y-3 max-h-[400px] overflow-y-auto">
-            {replacements.map((r, i) => (
-              <div key={i} className="p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                    {r.type || 'field'}
-                  </span>
-                  <span className="text-sm font-medium text-gray-700">
-                    {r.placeholder || r.original}
-                  </span>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  <code className="text-xs bg-gray-200 px-2 py-1 rounded text-gray-600 whitespace-nowrap">
-                    {r.original.length > 25 ? r.original.substring(0, 25) + '...' : r.original}
-                  </code>
-                  <ArrowRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                  <input
-                    type="text"
-                    value={r.new_value || ''}
-                    onChange={(e) => updateReplacement(i, e.target.value)}
-                    placeholder="Yangi qiymat..."
-                    className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg 
-                             focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  />
-                  {r.ai_suggestion && r.new_value !== r.ai_suggestion && (
-                    <button
-                      onClick={() => applySuggestion(i)}
-                      className="text-xs px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-lg flex items-center gap-1 whitespace-nowrap"
-                      title={`AI tavsiyasi: ${r.ai_suggestion}`}
-                    >
-                      <Lightbulb className="w-3 h-3" />
-                      {r.ai_suggestion.length > 15 ? r.ai_suggestion.substring(0, 15) + '...' : r.ai_suggestion}
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex gap-3 mt-5 pt-4 border-t border-gray-100">
-            <button
-              onClick={resetAll}
-              className="btn-secondary flex-1"
-            >
-              <X className="w-4 h-4" />
-              Bekor qilish
-            </button>
-            <button
-              onClick={handleApply}
-              disabled={loading}
-              className="btn-primary flex-1 disabled:opacity-50"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Qo'llanmoqda...
-                </>
-              ) : (
-                <>
-                  <CheckCircle className="w-4 h-4" />
-                  Tasdiqlash va yuklab olish
-                </>
-              )}
-            </button>
-          </div>
-        </motion.div>
-      )}
-
-      {/* Text Preview */}
-      {text && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="bg-white rounded-xl border border-gray-200 p-4"
-        >
-          <h4 className="font-medium text-gray-800 mb-3">Fayl matni</h4>
-          <div className="bg-gray-50 rounded-lg p-3 max-h-[200px] overflow-y-auto">
-            <pre className="text-sm text-gray-600 whitespace-pre-wrap font-mono">
-              {text.substring(0, 2000)}
-              {text.length > 2000 && '...'}
-            </pre>
-          </div>
-        </motion.div>
-      )}
-
       {/* Success Result */}
-      {result && (
+      {result && result.success && (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -576,10 +437,16 @@ const AutoFillTab = () => {
                 Muvaffaqiyatli!
               </p>
               <p className="text-green-600">
-                {result.changes} ta o'zgarish qo'llandi. Fayl yuklab olindi.
+                Hujjat tahrirlandi va yuklab olindi: {result.filename}
               </p>
             </div>
           </div>
+          <button
+            onClick={resetAll}
+            className="mt-4 text-sm text-green-700 hover:text-green-800 underline"
+          >
+            Yangi hujjat tahrirlash
+          </button>
         </motion.div>
       )}
     </div>
@@ -728,7 +595,7 @@ export default function App() {
 
         {/* Credits */}
         <p className="text-center text-gray-400 text-sm mt-8">
-          AI Doc Pro • Powered by Claude AI
+          AI Doc Pro • Professional hujjatlar yaratish platformasi
         </p>
       </div>
     </div>
