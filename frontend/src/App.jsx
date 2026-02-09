@@ -15,7 +15,7 @@ const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1N
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // API URL
-const API_URL = import.meta.env.VITE_API_URL || '';
+const API_URL = import.meta.env.VITE_API_URL || 'https://ai-doc-pro-production.up.railway.app';
 
 // Tab ma'lumotlari
 const tabs = [
