@@ -1,32 +1,27 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from typing import List, Optional
 import os
 import tempfile
 import json
 import re
+import zipfile
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from docx import Document
 from io import BytesIO
 
-# PDF uchun
+# Supabase
 try:
-    from pypdf import PdfReader
-    PDF_SUPPORTED = True
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
 except ImportError:
-    PDF_SUPPORTED = False
+    SUPABASE_AVAILABLE = False
 
-# PDF to Word uchun
-try:
-    from pdf2docx import Converter
-    PDF2DOCX_AVAILABLE = True
-except ImportError:
-    PDF2DOCX_AVAILABLE = False
-
-# Claude API uchun
+# Claude API
 try:
     import anthropic
     CLAUDE_AVAILABLE = True
@@ -35,7 +30,7 @@ except ImportError:
 
 app = FastAPI(title="AI Doc Pro API")
 
-# CORS sozlamalari
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,6 +38,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Supabase client
+def get_supabase() -> Optional[Client]:
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if url and key and SUPABASE_AVAILABLE:
+        return create_client(url, key)
+    return None
 
 # Claude client
 def get_claude_client():
@@ -55,23 +58,87 @@ def get_claude_client():
 class ExcelRequest(BaseModel):
     prompt: str
 
+class CheckLimitRequest(BaseModel):
+    user_id: Optional[str] = None
+
+# ============ HELPERS ============
+
+def get_client_ip(request: Request) -> str:
+    """Client IP manzilini olish"""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+async def check_and_record_usage(request: Request, action_type: str, user_id: Optional[str] = None) -> dict:
+    """Limitni tekshirish va foydalanishni qayd qilish"""
+    supabase = get_supabase()
+    if not supabase:
+        # Supabase yo'q bo'lsa, ruxsat berish
+        return {"allowed": True, "remaining": -1, "is_premium": False}
+    
+    ip_address = get_client_ip(request)
+    
+    try:
+        # Function chaqirish
+        result = supabase.rpc('record_usage', {
+            'p_ip_address': ip_address,
+            'p_action_type': action_type,
+            'p_user_id': user_id
+        }).execute()
+        
+        if result.data:
+            return result.data
+        return {"allowed": True, "remaining": -1}
+    except Exception as e:
+        print(f"Usage tracking error: {e}")
+        return {"allowed": True, "remaining": -1}
+
+async def check_limit_only(request: Request, user_id: Optional[str] = None) -> dict:
+    """Faqat limitni tekshirish (qayd qilmasdan)"""
+    supabase = get_supabase()
+    if not supabase:
+        return {"allowed": True, "remaining": -1, "is_premium": False}
+    
+    ip_address = get_client_ip(request)
+    
+    try:
+        result = supabase.rpc('check_daily_limit', {
+            'check_ip': ip_address,
+            'check_user_id': user_id
+        }).execute()
+        
+        if result.data:
+            return result.data
+        return {"allowed": True, "remaining": 5}
+    except Exception as e:
+        print(f"Limit check error: {e}")
+        return {"allowed": True, "remaining": 5}
+
+# ============ ENDPOINTS ============
+
 @app.get("/")
 async def root():
     return {
         "message": "AI Doc Pro API ishlamoqda!",
-        "ai_enabled": CLAUDE_AVAILABLE and bool(os.getenv("ANTHROPIC_API_KEY")),
-        "pdf_supported": PDF_SUPPORTED,
-        "pdf2docx_available": PDF2DOCX_AVAILABLE
+        "version": "2.0",
+        "features": ["excel", "autofill", "templates", "auth"]
     }
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
+@app.post("/api/check-limit")
+async def check_limit(request: Request, user_id: Optional[str] = None):
+    """Foydalanuvchi limitini tekshirish"""
+    result = await check_limit_only(request, user_id)
+    return result
+
 # ============ AI EXCEL GENERATOR ============
 
 async def generate_excel_with_ai(prompt: str) -> dict:
-    """Claude AI yordamida Excel strukturasini yaratish"""
+    """Claude AI bilan Excel yaratish"""
     client = get_claude_client()
     
     if not client:
@@ -95,85 +162,41 @@ JSON formati:
 }
 
 Qoidalar:
-1. Formulalar = bilan boshlanadi (masalan: =SUM(A1:A10), =A2*B2)
-2. Sonlar raqam sifatida (10000, 500.5)
-3. Matn qo'shtirnoqda ("matn")
-4. Sanalar "01.01.2025" formatda
-5. Har doim mantiqiy va to'liq ma'lumotlar bilan
-6. O'zbek tilida"""
+1. Formulalar = bilan boshlanadi
+2. Sonlar raqam sifatida
+3. O'zbek tilida"""
 
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Quyidagi so'rov uchun Excel jadval yarat:\n\n{prompt}"
-                }
-            ],
+            messages=[{"role": "user", "content": f"Excel jadval yarat: {prompt}"}],
             system=system_prompt
         )
         
         response_text = message.content[0].text.strip()
-        
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
-            structure = json.loads(json_match.group())
-            return structure
-        else:
-            raise ValueError("JSON topilmadi")
-            
+            return json.loads(json_match.group())
+        raise ValueError("JSON topilmadi")
     except Exception as e:
-        print(f"AI xatolik: {e}")
+        print(f"AI error: {e}")
         return generate_excel_fallback(prompt)
 
 def generate_excel_fallback(prompt: str) -> dict:
-    """AI ishlamasa, oddiy rule-based generator"""
-    prompt_lower = prompt.lower()
-    
-    if "moliya" in prompt_lower or "daromad" in prompt_lower or "kirim" in prompt_lower or "chiqim" in prompt_lower:
-        return {
-            "title": "Moliyaviy_Hisobot",
-            "sheets": [{
-                "name": "Hisobot",
-                "headers": ["№", "Sana", "Tavsif", "Kirim", "Chiqim", "Balans"],
-                "data": [
-                    [1, "01.01.2025", "Boshlang'ich balans", 10000000, 0, "=D2-E2"],
-                    [2, "05.01.2025", "Mahsulot sotish", 5000000, 0, "=F2+D3-E3"],
-                    [3, "10.01.2025", "Ofis ijarasi", 0, 2000000, "=F3+D4-E4"],
-                    ["", "", "JAMI:", "=SUM(D2:D4)", "=SUM(E2:E4)", "=D5-E5"],
-                ]
-            }]
-        }
-    
-    elif "xodim" in prompt_lower or "ishchi" in prompt_lower:
-        return {
-            "title": "Xodimlar",
-            "sheets": [{
-                "name": "Royxat",
-                "headers": ["№", "F.I.O", "Lavozim", "Telefon", "Ish haqi"],
-                "data": [
-                    [1, "Karimov Anvar", "Direktor", "+998901234567", 15000000],
-                    [2, "Tosheva Madina", "Buxgalter", "+998901234568", 8000000],
-                    ["", "", "", "JAMI:", "=SUM(E2:E3)"],
-                ]
-            }]
-        }
-    
-    else:
-        return {
-            "title": "Jadval",
-            "sheets": [{
-                "name": "Ma'lumotlar",
-                "headers": ["№", "Nomi", "Miqdori", "Narxi", "Jami"],
-                "data": [
-                    [1, "Element 1", 10, 50000, "=C2*D2"],
-                    [2, "Element 2", 20, 30000, "=C3*D3"],
-                    ["", "", "", "JAMI:", "=SUM(E2:E3)"],
-                ]
-            }]
-        }
+    """Fallback generator"""
+    return {
+        "title": "Jadval",
+        "sheets": [{
+            "name": "Ma'lumotlar",
+            "headers": ["№", "Nomi", "Miqdori", "Narxi", "Jami"],
+            "data": [
+                [1, "Element 1", 10, 50000, "=C2*D2"],
+                [2, "Element 2", 20, 30000, "=C3*D3"],
+                ["", "", "", "JAMI:", "=SUM(E2:E3)"],
+            ]
+        }]
+    }
 
 def create_styled_excel(structure: dict) -> str:
     """Excel fayl yaratish"""
@@ -181,27 +204,21 @@ def create_styled_excel(structure: dict) -> str:
     
     header_font = Font(bold=True, color="FFFFFF", size=11)
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    header_alignment = Alignment(horizontal="center", vertical="center")
     thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
     )
     
     for sheet_idx, sheet_data in enumerate(structure.get("sheets", [])):
-        if sheet_idx == 0:
-            ws = wb.active
-            ws.title = sheet_data.get("name", "Sheet1")[:31]
-        else:
-            ws = wb.create_sheet(title=sheet_data.get("name", f"Sheet{sheet_idx+1}")[:31])
+        ws = wb.active if sheet_idx == 0 else wb.create_sheet()
+        ws.title = sheet_data.get("name", "Sheet1")[:31]
         
         headers = sheet_data.get("headers", [])
         for col_idx, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col_idx, value=header)
             cell.font = header_font
             cell.fill = header_fill
-            cell.alignment = header_alignment
+            cell.alignment = Alignment(horizontal="center")
             cell.border = thin_border
         
         for row_idx, row_data in enumerate(sheet_data.get("data", []), 2):
@@ -216,27 +233,27 @@ def create_styled_excel(structure: dict) -> str:
     temp_dir = tempfile.mkdtemp()
     filepath = os.path.join(temp_dir, f"{structure.get('title', 'document')}.xlsx")
     wb.save(filepath)
-    
     return filepath
 
 @app.post("/api/excel/preview")
-async def excel_preview(request: ExcelRequest):
+async def excel_preview(request: Request, data: ExcelRequest, user_id: Optional[str] = Header(None, alias="X-User-ID")):
     """Excel preview"""
     try:
-        structure = await generate_excel_with_ai(request.prompt)
-        return {
-            "success": True,
-            "title": structure.get("title", "Hujjat"),
-            "sheets": structure.get("sheets", [])
-        }
+        structure = await generate_excel_with_ai(data.prompt)
+        return {"success": True, "title": structure.get("title"), "sheets": structure.get("sheets")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/excel/generate")
-async def excel_generate(request: ExcelRequest):
-    """Excel fayl yaratish"""
+async def excel_generate(request: Request, data: ExcelRequest, user_id: Optional[str] = Header(None, alias="X-User-ID")):
+    """Excel yaratish"""
     try:
-        structure = await generate_excel_with_ai(request.prompt)
+        # Limitni tekshirish va qayd qilish
+        usage_result = await check_and_record_usage(request, "excel", user_id)
+        if not usage_result.get("success", True) and not usage_result.get("allowed", True):
+            raise HTTPException(status_code=429, detail="Kunlik limit tugadi. Premium obunaga o'ting!")
+        
+        structure = await generate_excel_with_ai(data.prompt)
         filepath = create_styled_excel(structure)
         
         return FileResponse(
@@ -244,43 +261,28 @@ async def excel_generate(request: ExcelRequest):
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=f"{structure.get('title', 'document')}.xlsx"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============ AI AUTO-FILL ============
+# ============ AUTO-FILL (KO'P FAYL) ============
 
-def extract_text_from_file(content: bytes, file_ext: str) -> str:
-    """Fayldan matn ajratib olish"""
+def extract_text_from_docx(content: bytes) -> str:
+    """Word fayldan matn olish"""
+    doc = Document(BytesIO(content))
     text = ""
-    
-    if file_ext == 'pdf':
-        if not PDF_SUPPORTED:
-            raise HTTPException(status_code=400, detail="PDF kutubxonasi o'rnatilmagan")
-        pdf_reader = PdfReader(BytesIO(content))
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-                
-    elif file_ext == 'docx':
-        doc = Document(BytesIO(content))
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    text += cell.text + " "
-                text += "\n"
-                    
-    elif file_ext == 'txt':
-        text = content.decode('utf-8', errors='ignore')
-    else:
-        raise HTTPException(status_code=400, detail=f"Qo'llab-quvvatlanmaydigan format: {file_ext}")
-    
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text += cell.text + " "
+            text += "\n"
     return text
 
 async def get_replacements_from_ai(text: str, instruction: str) -> list:
-    """AI dan almashtirish ro'yxatini olish - KUCHAYTIRILGAN"""
+    """AI dan almashtirish ro'yxatini olish"""
     client = get_claude_client()
     
     if not client:
@@ -293,247 +295,172 @@ VAZIFANG:
 2. Ko'rsatma asosida BARCHA almashtirilishi kerak bo'lgan joylarni top
 3. JSON formatda almashtirish ro'yxatini qaytar
 
-MUHIM QOIDALAR:
-1. Hujjatda bir xil ma'lumot BIR NECHA MARTA takrorlanishi mumkin - BARCHASINI top!
-2. Masalan: shartnoma raqami 5 joyda bo'lishi mumkin - 5 tasini ham qo'sh
-3. Masalan: mijoz ismi 10 joyda bo'lishi mumkin - 10 tasini ham qo'sh
-4. Masalan: sana 20 joyda bo'lishi mumkin - 20 tasini ham qo'sh
-5. "old" maydoni AYNAN hujjatdagi matn bo'lishi kerak
-6. Hatto bir xil matn bo'lsa ham, har birini alohida qo'sh
+MUHIM:
+- Bir xil ma'lumot BIR NECHA MARTA takrorlanishi mumkin - BARCHASINI top!
+- "old" maydoni AYNAN hujjatdagi matn bo'lishi kerak
 
 JSON formati:
 {
     "replacements": [
-        {"old": "eski matn 1", "new": "yangi matn 1"},
-        {"old": "eski matn 2", "new": "yangi matn 2"},
-        {"old": "eski matn 3", "new": "yangi matn 3"}
+        {"old": "eski matn", "new": "yangi matn"}
     ]
 }
 
-MISOLLAR:
-- Agar "shartnoma raqamini 01-25/199B ga o'zgartir" deyilsa:
-  Hujjatdagi "№ 01-24/123" ni toping va {"old": "№ 01-24/123", "new": "№ 01-25/199B"} qo'shing
-  
-- Agar "mijoz ismini Karimov ga o'zgartir" deyilsa:
-  Hujjatdagi BARCHA eski ismlarni toping va har biri uchun alohida {"old": "...", "new": "Karimov"} qo'shing
-
-- Agar "sanalarni bugungi kunga o'zgartir" deyilsa:
-  Hujjatdagi BARCHA sanalarni toping (19.12.2024, 20.12.2024 va h.k.) va har biri uchun alohida replacement qo'shing
-
-FAQAT JSON QAYTAR! Boshqa hech qanday matn yo'q!"""
+FAQAT JSON QAYTAR!"""
 
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=8000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Quyidagi hujjatni DIQQAT BILAN tahlil qil va BARCHA almashtirilishi kerak bo'lgan joylarni top:
-
-=== HUJJAT MATNI ===
-{text}
-=== HUJJAT TUGADI ===
-
-=== FOYDALANUVCHI KO'RSATMASI ===
-{instruction}
-=== KO'RSATMA TUGADI ===
-
-MUHIM: Hujjatda bir xil ma'lumot bir necha marta takrorlanishi mumkin. BARCHASINI top va ro'yxatga qo'sh!
-
-JSON formatda BARCHA almashtirishlar ro'yxatini qaytar:"""
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": f"Hujjat:\n{text[:8000]}\n\nKo'rsatma:\n{instruction}\n\nJSON:"
+            }],
             system=system_prompt
         )
         
         response_text = message.content[0].text.strip()
-        
-        # JSON ni ajratib olish
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             data = json.loads(json_match.group())
-            replacements = data.get("replacements", [])
-            print(f"AI {len(replacements)} ta almashtirish topdi")
-            return replacements
-        
+            return data.get("replacements", [])
         return []
-        
     except Exception as e:
-        print(f"AI xatolik: {e}")
         raise HTTPException(status_code=500, detail=f"AI xatolik: {str(e)}")
 
-def apply_replacements_to_docx(content: bytes, replacements: list) -> str:
-    """Word hujjatga almashtirishlarni qo'llash - FORMATLASHNI SAQLAGAN HOLDA"""
+def apply_replacements_to_docx(content: bytes, replacements: list) -> bytes:
+    """Word faylga almashtirishlar qo'llash"""
     doc = Document(BytesIO(content))
-    replacement_count = 0
     
     def replace_in_paragraph(paragraph, old_text, new_text):
-        """Paragraf ichida matnni almashtirish, formatlashni saqlash"""
-        nonlocal replacement_count
         if old_text in paragraph.text:
-            # Har bir run ni tekshirish
             for run in paragraph.runs:
                 if old_text in run.text:
                     run.text = run.text.replace(old_text, new_text)
-                    replacement_count += 1
                     return True
-            
-            # Murakkab holat - bir nechta run orasida bo'lingan
-            full_text = paragraph.text
-            if old_text in full_text:
-                new_full_text = full_text.replace(old_text, new_text)
+            # Murakkab holat
+            if old_text in paragraph.text:
+                full_text = paragraph.text.replace(old_text, new_text)
                 if paragraph.runs:
-                    first_run = paragraph.runs[0]
-                    first_run.text = new_full_text
+                    paragraph.runs[0].text = full_text
                     for run in paragraph.runs[1:]:
                         run.text = ""
-                    replacement_count += 1
                     return True
         return False
     
-    # Har bir almashtirish uchun
     for repl in replacements:
         old_text = repl.get("old", "")
         new_text = repl.get("new", "")
-        
         if not old_text:
             continue
-        if new_text is None:
-            new_text = ""
         
-        # Paragraflarda almashtirish
         for para in doc.paragraphs:
-            replace_in_paragraph(para, old_text, new_text)
+            replace_in_paragraph(para, old_text, new_text or "")
         
-        # Jadvallarda almashtirish
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for para in cell.paragraphs:
-                        replace_in_paragraph(para, old_text, new_text)
+                        replace_in_paragraph(para, old_text, new_text or "")
         
-        # Header va Footer larda
         for section in doc.sections:
             if section.header:
                 for para in section.header.paragraphs:
-                    replace_in_paragraph(para, old_text, new_text)
+                    replace_in_paragraph(para, old_text, new_text or "")
             if section.footer:
                 for para in section.footer.paragraphs:
-                    replace_in_paragraph(para, old_text, new_text)
+                    replace_in_paragraph(para, old_text, new_text or "")
     
-    print(f"Jami {replacement_count} ta almashtirish bajarildi")
-    
-    # Saqlash
-    temp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(temp_dir, "tahrirlangan_hujjat.docx")
-    doc.save(output_path)
-    
-    return output_path
-
-def convert_pdf_to_docx(content: bytes) -> str:
-    """PDF ni Word ga convert qilish - FORMATLASHNI SAQLAGAN HOLDA"""
-    temp_dir = tempfile.mkdtemp()
-    pdf_path = os.path.join(temp_dir, "input.pdf")
-    docx_path = os.path.join(temp_dir, "converted.docx")
-    
-    # PDF ni saqlash
-    with open(pdf_path, 'wb') as f:
-        f.write(content)
-    
-    if PDF2DOCX_AVAILABLE:
-        try:
-            # pdf2docx bilan convert qilish - formatlashni yaxshi saqlaydi
-            cv = Converter(pdf_path)
-            cv.convert(docx_path)
-            cv.close()
-            return docx_path
-        except Exception as e:
-            print(f"pdf2docx xatolik: {e}")
-    
-    # Fallback - oddiy matn bilan
-    if PDF_SUPPORTED:
-        pdf_reader = PdfReader(BytesIO(content))
-        doc = Document()
-        
-        for page in pdf_reader.pages:
-            text = page.extract_text()
-            if text:
-                for line in text.split('\n'):
-                    if line.strip():
-                        doc.add_paragraph(line)
-        
-        doc.save(docx_path)
-        return docx_path
-    
-    raise HTTPException(status_code=400, detail="PDF convert qilib bo'lmadi")
-
-def apply_replacements_to_txt(content: bytes, replacements: list) -> str:
-    """TXT faylga almashtirishlarni qo'llash"""
-    text = content.decode('utf-8', errors='ignore')
-    
-    for repl in replacements:
-        old_text = repl.get("old", "")
-        new_text = repl.get("new", "")
-        if old_text and new_text:
-            text = text.replace(old_text, new_text)
-    
-    temp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(temp_dir, "tahrirlangan_hujjat.txt")
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(text)
-    
-    return output_path
+    # BytesIO ga saqlash
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output.read()
 
 @app.post("/api/autofill/process")
 async def process_autofill(
-    file: UploadFile = File(...),
-    instruction: str = Form(...)
+    request: Request,
+    files: List[UploadFile] = File(...),
+    instruction: str = Form(...),
+    user_id: Optional[str] = Header(None, alias="X-User-ID")
 ):
-    """Hujjatni AI bilan tahlil qilish va o'zgartirish"""
+    """Ko'p faylni AI bilan tahrirlash"""
     try:
         if not instruction.strip():
             raise HTTPException(status_code=400, detail="Ko'rsatma kiriting")
         
-        content = await file.read()
-        file_ext = file.filename.split('.')[-1].lower()
-        original_filename = file.filename
+        if len(files) == 0:
+            raise HTTPException(status_code=400, detail="Fayl yuklang")
         
-        # PDF bo'lsa, avval Word ga convert qilamiz
-        if file_ext == 'pdf':
-            docx_path = convert_pdf_to_docx(content)
-            with open(docx_path, 'rb') as f:
-                content = f.read()
-            file_ext = 'docx'
-            original_filename = original_filename.replace('.pdf', '.docx')
+        if len(files) > 10:
+            raise HTTPException(status_code=400, detail="Maksimum 10 ta fayl yuklash mumkin")
         
-        # Matnni ajratib olish (AI uchun)
-        original_text = extract_text_from_file(content, file_ext)
+        # Limitni tekshirish
+        usage_result = await check_and_record_usage(request, "autofill", user_id)
+        if not usage_result.get("success", True) and not usage_result.get("allowed", True):
+            raise HTTPException(status_code=429, detail="Kunlik limit tugadi. Premium obunaga o'ting!")
         
-        if not original_text.strip():
-            raise HTTPException(status_code=400, detail="Fayl bo'sh yoki matn topilmadi")
+        processed_files = []
         
-        # AI dan almashtirish ro'yxatini olish
-        replacements = await get_replacements_from_ai(original_text, instruction)
-        
-        if not replacements:
-            raise HTTPException(status_code=400, detail="O'zgartirish kerak bo'lgan joylar topilmadi")
-        
-        # Fayl formatiga qarab almashtirishni qo'llash
-        if file_ext == 'docx':
-            output_path = apply_replacements_to_docx(content, replacements)
-            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            filename = f"tahrirlangan_{original_filename}"
+        for file in files:
+            # Faqat Word qabul qilish
+            if not file.filename.lower().endswith('.docx'):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Faqat Word (.docx) fayllar qabul qilinadi. '{file.filename}' qabul qilinmadi."
+                )
             
-        else:  # txt
-            output_path = apply_replacements_to_txt(content, replacements)
-            media_type = "text/plain"
-            filename = f"tahrirlangan_{original_filename}"
+            content = await file.read()
+            
+            # Matnni olish
+            text = extract_text_from_docx(content)
+            if not text.strip():
+                continue
+            
+            # AI dan almashtirishlar olish
+            replacements = await get_replacements_from_ai(text, instruction)
+            
+            if replacements:
+                # Almashtirishlarni qo'llash
+                modified_content = apply_replacements_to_docx(content, replacements)
+                processed_files.append({
+                    "filename": f"tahrirlangan_{file.filename}",
+                    "content": modified_content
+                })
+            else:
+                processed_files.append({
+                    "filename": f"tahrirlangan_{file.filename}",
+                    "content": content
+                })
+        
+        if len(processed_files) == 0:
+            raise HTTPException(status_code=400, detail="Hech qanday fayl qayta ishlana olmadi")
+        
+        # Bitta fayl bo'lsa
+        if len(processed_files) == 1:
+            temp_dir = tempfile.mkdtemp()
+            output_path = os.path.join(temp_dir, processed_files[0]["filename"])
+            with open(output_path, 'wb') as f:
+                f.write(processed_files[0]["content"])
+            
+            return FileResponse(
+                output_path,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=processed_files[0]["filename"]
+            )
+        
+        # Ko'p fayl bo'lsa - ZIP
+        temp_dir = tempfile.mkdtemp()
+        zip_path = os.path.join(temp_dir, "tahrirlangan_hujjatlar.zip")
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for pf in processed_files:
+                zf.writestr(pf["filename"], pf["content"])
         
         return FileResponse(
-            output_path,
-            media_type=media_type,
-            filename=filename
+            zip_path,
+            media_type="application/zip",
+            filename="tahrirlangan_hujjatlar.zip"
         )
         
     except HTTPException:
@@ -541,24 +468,103 @@ async def process_autofill(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server xatoligi: {str(e)}")
 
-# Eski endpoint
-@app.post("/api/autofill/analyze")
-async def analyze_document(file: UploadFile = File(...)):
-    """Hujjatni tahlil qilish (eski endpoint)"""
+# ============ TEMPLATES ============
+
+@app.get("/api/templates")
+async def get_templates(request: Request, user_id: Optional[str] = Header(None, alias="X-User-ID")):
+    """Shablonlar ro'yxatini olish"""
+    supabase = get_supabase()
+    if not supabase:
+        return {"templates": [], "message": "Database mavjud emas"}
+    
+    try:
+        # Public shablonlar
+        result = supabase.table('templates').select('*').eq('is_public', True).execute()
+        templates = result.data or []
+        
+        # User shablonlari
+        if user_id:
+            user_result = supabase.table('templates').select('*').eq('user_id', user_id).execute()
+            templates.extend(user_result.data or [])
+        
+        return {"templates": templates}
+    except Exception as e:
+        return {"templates": [], "error": str(e)}
+
+@app.post("/api/templates")
+async def create_template(
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    description: str = Form(""),
+    category: str = Form("other"),
+    user_id: str = Header(..., alias="X-User-ID")
+):
+    """Yangi shablon yaratish"""
+    supabase = get_supabase()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database mavjud emas")
+    
+    if not file.filename.lower().endswith('.docx'):
+        raise HTTPException(status_code=400, detail="Faqat Word (.docx) fayllar qabul qilinadi")
+    
     try:
         content = await file.read()
-        file_ext = file.filename.split('.')[-1].lower()
-        text = extract_text_from_file(content, file_ext)
         
-        return {
-            "success": True,
-            "text": text[:3000],
-            "file_type": file_ext
-        }
-    except HTTPException:
-        raise
+        # Faylni storage ga yuklash
+        file_path = f"templates/{user_id}/{file.filename}"
+        supabase.storage.from_('templates').upload(file_path, content)
+        
+        # URL olish
+        file_url = supabase.storage.from_('templates').get_public_url(file_path)
+        
+        # Database ga yozish
+        result = supabase.table('templates').insert({
+            'user_id': user_id,
+            'name': name,
+            'description': description,
+            'category': category,
+            'file_url': file_url,
+            'file_name': file.filename,
+            'is_public': False
+        }).execute()
+        
+        return {"success": True, "template": result.data[0] if result.data else None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/templates/{template_id}")
+async def delete_template(
+    template_id: str,
+    user_id: str = Header(..., alias="X-User-ID")
+):
+    """Shablonni o'chirish"""
+    supabase = get_supabase()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database mavjud emas")
+    
+    try:
+        supabase.table('templates').delete().eq('id', template_id).eq('user_id', user_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ SUBSCRIPTION ============
+
+@app.get("/api/subscription")
+async def get_subscription(user_id: str = Header(..., alias="X-User-ID")):
+    """Foydalanuvchi obunasini olish"""
+    supabase = get_supabase()
+    if not supabase:
+        return {"plan": "free", "status": "active"}
+    
+    try:
+        result = supabase.table('subscriptions').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(1).execute()
+        if result.data:
+            return result.data[0]
+        return {"plan": "free", "status": "active"}
+    except Exception as e:
+        return {"plan": "free", "status": "active", "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
