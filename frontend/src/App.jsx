@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { 
   Sparkles, FileText, FileSpreadsheet, 
   Download, Zap, Upload, CheckCircle, AlertCircle, Loader2, X,
-  RefreshCw, Edit3, User, LogOut, Crown, Lock, Mail, Eye, EyeOff, FolderOpen
+  RefreshCw, Edit3, User, LogOut, Crown, Lock, Mail, Eye, EyeOff, FolderOpen, Plus
 } from 'lucide-react';
 
 // Supabase
@@ -195,6 +195,27 @@ const ExcelTab = ({ onLimitReached, updateRemaining }) => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [showAddTemplate, setShowAddTemplate] = useState(false);
+  const [customTemplates, setCustomTemplates] = useState(() => {
+    const saved = localStorage.getItem('excel_templates');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const saveTemplates = (templates) => {
+    setCustomTemplates(templates);
+    localStorage.setItem('excel_templates', JSON.stringify(templates));
+  };
+
+  const addTemplate = (text) => {
+    if (text.trim() && !customTemplates.includes(text.trim())) {
+      saveTemplates([...customTemplates, text.trim()]);
+    }
+    setShowAddTemplate(false);
+  };
+
+  const removeTemplate = (index) => {
+    saveTemplates(customTemplates.filter((_, i) => i !== index));
+  };
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
@@ -249,10 +270,10 @@ const ExcelTab = ({ onLimitReached, updateRemaining }) => {
     }
   };
 
-  const examples = [
-    "Kichik biznes uchun oylik moliyaviy hisobot",
-    "IT kompaniya xodimlari va maoshlari",
-    "Haftalik dars jadvali"
+  const defaultTemplates = [
+    "Oylik moliyaviy hisobot - daromad va xarajatlar",
+    "Kompaniya xodimlari ro'yxati va maoshlari",
+    "Mahsulotlar ro'yxati - narx va miqdor bilan"
   ];
 
   return (
@@ -265,13 +286,52 @@ const ExcelTab = ({ onLimitReached, updateRemaining }) => {
           className="w-full p-4 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[120px] resize-none"
           disabled={loading}
         />
+        
+        {/* Templates */}
         <div className="flex flex-wrap gap-2 mt-3">
-          {examples.map((ex, i) => (
-            <button key={i} onClick={() => setPrompt(ex)} className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg">
-              {ex.substring(0, 35)}...
+          {defaultTemplates.map((t, i) => (
+            <button key={`d-${i}`} onClick={() => setPrompt(t)} className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg">
+              {t.substring(0, 35)}...
             </button>
           ))}
+          {customTemplates.map((t, i) => (
+            <div key={`c-${i}`} className="flex items-center gap-1 text-xs px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg group">
+              <button onClick={() => setPrompt(t)} className="hover:underline">
+                {t.substring(0, 30)}...
+              </button>
+              <button onClick={() => removeTemplate(i)} className="opacity-0 group-hover:opacity-100 ml-1 text-red-400 hover:text-red-600">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
         </div>
+        
+        {/* Add Template Button */}
+        {showAddTemplate ? (
+          <div className="mt-3 flex gap-2">
+            <input
+              type="text"
+              placeholder="Yangi shablon matni..."
+              className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addTemplate(e.target.value);
+                if (e.key === 'Escape') setShowAddTemplate(false);
+              }}
+              autoFocus
+            />
+            <button onClick={() => setShowAddTemplate(false)} className="px-3 py-2 text-gray-500 hover:bg-gray-100 rounded-lg">
+              Bekor
+            </button>
+          </div>
+        ) : (
+          <button 
+            onClick={() => setShowAddTemplate(true)} 
+            className="mt-3 w-full py-2 border-2 border-dashed border-gray-200 hover:border-gray-300 text-gray-500 text-sm rounded-lg flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            Shablon qo'shmoq
+          </button>
+        )}
       </div>
 
       <button 
@@ -311,6 +371,40 @@ const AutoFillTab = ({ onLimitReached, updateRemaining }) => {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
+  const [showAddTemplate, setShowAddTemplate] = useState(false);
+  const [customTemplates, setCustomTemplates] = useState(() => {
+    const saved = localStorage.getItem('autofill_templates');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const saveTemplates = (templates) => {
+    setCustomTemplates(templates);
+    localStorage.setItem('autofill_templates', JSON.stringify(templates));
+  };
+
+  const addTemplate = (text) => {
+    if (text.trim() && !customTemplates.includes(text.trim())) {
+      saveTemplates([...customTemplates, text.trim()]);
+    }
+    setShowAddTemplate(false);
+  };
+
+  const removeTemplate = (index) => {
+    saveTemplates(customTemplates.filter((_, i) => i !== index));
+  };
+
+  const appendInstruction = (text) => {
+    setInstruction(prev => prev ? `${prev}\n${text}` : text);
+  };
+
+  const defaultTemplates = [
+    "Shartnoma raqamini ___ ga o'zgartir",
+    "Sanalarni bugungi kunga o'zgartir", 
+    "Mijoz ismi: ___",
+    "Pasport raqami: ___",
+    "Avtomobil: ___, VIN: ___",
+    "Narxni ___ so'm ga o'zgartir"
+  ];
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -457,6 +551,56 @@ Masalan:
           className="w-full p-4 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[140px] resize-none"
           disabled={loading}
         />
+        
+        {/* Instruction Templates */}
+        <div className="flex flex-wrap gap-2 mt-3">
+          {defaultTemplates.map((t, i) => (
+            <button 
+              key={`d-${i}`} 
+              onClick={() => appendInstruction(t)} 
+              className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg"
+            >
+              {t}
+            </button>
+          ))}
+          {customTemplates.map((t, i) => (
+            <div key={`c-${i}`} className="flex items-center gap-1 text-xs px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg group">
+              <button onClick={() => appendInstruction(t)} className="hover:underline">
+                {t.substring(0, 25)}{t.length > 25 ? '...' : ''}
+              </button>
+              <button onClick={() => removeTemplate(i)} className="opacity-0 group-hover:opacity-100 ml-1 text-red-400 hover:text-red-600">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+        
+        {/* Add Template */}
+        {showAddTemplate ? (
+          <div className="mt-3 flex gap-2">
+            <input
+              type="text"
+              placeholder="Yangi ko'rsatma shabloni..."
+              className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addTemplate(e.target.value);
+                if (e.key === 'Escape') setShowAddTemplate(false);
+              }}
+              autoFocus
+            />
+            <button onClick={() => setShowAddTemplate(false)} className="px-3 py-2 text-gray-500 hover:bg-gray-100 rounded-lg">
+              Bekor
+            </button>
+          </div>
+        ) : (
+          <button 
+            onClick={() => setShowAddTemplate(true)} 
+            className="mt-3 w-full py-2 border-2 border-dashed border-gray-200 hover:border-gray-300 text-gray-500 text-sm rounded-lg flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            Shablon qo'shmoq
+          </button>
+        )}
       </div>
 
       <button 
